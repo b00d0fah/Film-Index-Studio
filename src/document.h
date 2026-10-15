@@ -10,10 +10,11 @@ struct Photo {
 };
 struct Options {
     QString filmTemplate = "default";
+    int headerAlignment = 0; // 0 left, 1 center, 2 right
     bool header = true, details = true, autoRotate = true, fit = false;
     int headerHeight = 480, border = 35, gap = 25, outputWidth = 4572, quality = 94;
     QColor background = Qt::white, headerColor = QColor("#101010"), textColor = QColor("#f6f6f2"), matColor = Qt::black;
-    QString brand = "FilmLog", title, note, film, iso, location, date, camera, lens;
+    QString brand = "Film Index Studio", title, note, film, iso, location, date, camera, lens;
     int brandSize = 112, titleSize = 72, infoSize = 42;
 };
 struct Document {

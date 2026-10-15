@@ -1,8 +1,8 @@
 {
   "version": "2.0.0",
   "tasks": [
-    { "label": "FilmLog: Build and Test", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Test"], "group": {"kind":"build","isDefault":true}, "problemMatcher": "$gcc" },
-    { "label": "FilmLog: Debug Build", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Configuration", "Debug"], "problemMatcher": "$gcc" },
-    { "label": "FilmLog: Release Package", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Test", "-Deploy"], "problemMatcher": "$gcc" }
+    { "label": "Film Index: Build and Test", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Test"], "group": {"kind":"build","isDefault":true}, "problemMatcher": "$gcc" },
+    { "label": "Film Index: Debug Build", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Configuration", "Debug"], "problemMatcher": "$gcc" },
+    { "label": "Film Index: Release Package", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build.ps1", "-Test", "-Deploy"], "problemMatcher": "$gcc" }
   ]
 }

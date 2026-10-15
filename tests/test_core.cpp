@@ -79,8 +79,9 @@ class CoreTest : public QObject {
         d.options.headerColor = QColor("#234567");
         d.photos[1].rotation = 270;
         d.photos[1].cropX = .37;
+        d.options.headerAlignment = 1;
         QString error;
-        auto path = temp.filePath("中文 项目.flindex");
+        auto path = temp.filePath("中文 项目.findex");
         QVERIFY2(saveDocument(d, path, &error), qPrintable(error));
         Document loaded;
         QVERIFY2(loadDocument(path, &loaded, &error), qPrintable(error));
@@ -91,12 +92,59 @@ class CoreTest : public QObject {
         QCOMPARE(loaded.options.title, d.options.title);
         QCOMPARE(loaded.options.headerColor, d.options.headerColor);
         QCOMPARE(loaded.options.gap, 60);
+        QCOMPARE(loaded.options.headerAlignment, 1);
         QFile f(path);
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("{}");
         f.close();
         QVERIFY(!loadDocument(path, &loaded, &error));
         QCOMPARE(loaded.photos.size(), 2);
+    }
+    void headerAlignmentKeepsMetadataInItsColumn() {
+        const QRectF leftColumn(72, 0, 2000, 100);
+        const qreal textWidth = 420;
+        const qreal xLeft = alignedTextX(leftColumn, textWidth, 0);
+        const qreal xCenter = alignedTextX(leftColumn, textWidth, 1);
+        const qreal xRight = alignedTextX(leftColumn, textWidth, 2);
+        QCOMPARE(xLeft, leftColumn.left());
+        QVERIFY(xLeft < xCenter && xCenter < xRight);
+        QCOMPARE(xCenter, leftColumn.left() + (leftColumn.width() - textWidth) / 2);
+        QCOMPARE(xRight, leftColumn.right() - textWidth);
+        const QRectF rightColumn(2500, 0, 1800, 100);
+        // Right-column metadata owns its alignment, independent of the left-side selector.
+        QCOMPARE(alignedTextX(rightColumn, 600, 0), rightColumn.left());
+        QCOMPARE(alignedTextX(rightColumn, 600, 0), alignedTextX(rightColumn, 600, 0));
+        auto d = make(1);
+        d.options.title = "CITY WALK";
+        d.options.film = "COLOR FILM 400";
+        d.options.location = "SHANGHAI";
+        d.options.camera = "RANGEFINDER";
+        d.options.note = "CONTACT SHEET";
+        d.options.brand = "LONG MAIN TITLE";
+        d.options.outputWidth = 1600;
+        QImage results[3];
+        for (int align = 0; align < 3; ++align) {
+            d.options.headerAlignment = align;
+            auto rendered = renderSheet(d, 1600);
+            QVERIFY2(rendered.error.isEmpty(), qPrintable(rendered.error));
+            results[align] = rendered.image;
+        }
+        QVERIFY(!results[0].isNull());
+        QVERIFY(results[0].size() == results[1].size());
+        QVERIFY(results[1].size() == results[2].size());
+        const auto size = results[0].size();
+        // The right metadata column must remain pixel-identical when the left brand/note
+        // alignment changes, proving the two blocks do not collide or inherit each other's alignment.
+        const int rightStart = qRound(size.width() * .53);
+        const int headerHeight = qRound(d.options.headerHeight * (double(size.width()) / baseSheetSize(d).width()));
+        for (int y = 0; y < headerHeight; ++y)
+            for (int x = rightStart; x < size.width(); ++x)
+                QCOMPARE(results[0].pixel(x, y), results[2].pixel(x, y));
+        d.options.details = false;
+        d.options.headerAlignment = 1;
+        auto singleColumn = renderSheet(d, 1600);
+        QVERIFY(singleColumn.error.isEmpty());
+        QVERIFY(!singleColumn.image.isNull());
     }
     void validationAndCancel() {
         QVERIFY(!renderSheet(Document(), 600).error.isEmpty());

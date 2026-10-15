@@ -179,7 +179,7 @@ void Window::buildUi() {
     outer->setContentsMargins(20, 16, 20, 12);
     outer->setSpacing(14);
     auto top = new QHBoxLayout;
-    auto heading = new QLabel("FILMLOG  /  INDEX STUDIO");
+    auto heading = new QLabel("FILM  /  INDEX STUDIO");
     heading->setObjectName("heading");
     top->addWidget(heading);
     top->addStretch();
@@ -408,7 +408,19 @@ void Window::buildUi() {
     tip->setWordWrap(true);
     tip->setObjectName("muted");
     layout->addRow(tip);
-    line(text, "品牌文字", &o.brand, "brandText");
+    line(text, "主标题", &o.brand, "mainTitle");
+    auto alignment = new QComboBox;
+    alignment->setObjectName("headerAlignment");
+    alignment->addItems({"左对齐", "水平居中", "右对齐"});
+    text->addRow("左侧顶部文字对齐", alignment);
+    bindings << [this, alignment] {
+        QSignalBlocker blocker(alignment);
+        alignment->setCurrentIndex(doc.options.headerAlignment);
+    };
+    connect(alignment, &QComboBox::currentIndexChanged, this, [this](int index) {
+        doc.options.headerAlignment = index;
+        changed();
+    });
     line(text, "左侧备注", &o.note);
     line(text, "胶卷标题", &o.title, "titleText");
     line(text, "胶片型号", &o.film);
@@ -417,7 +429,7 @@ void Window::buildUi() {
     line(text, "拍摄日期", &o.date);
     line(text, "相机", &o.camera);
     line(text, "镜头", &o.lens);
-    spin(text, "品牌字号", &o.brandSize, 20, 180);
+    spin(text, "主标题字号", &o.brandSize, 20, 180);
     spin(text, "标题字号", &o.titleSize, 20, 120);
     spin(text, "信息字号", &o.infoSize, 16, 80);
     auto textTip = new QLabel("文字过长时自动省略；标题栏较矮时自动缩小文字。字号、间距以模板原始像素为单位。");
@@ -539,7 +551,7 @@ void Window::changed() {
 }
 void Window::updateTitle() {
     setWindowTitle(
-        QString("%1%2 — FilmLog Index Studio")
+        QString("%1%2 — Film Index Studio")
             .arg(projectPath.isEmpty() ? "未命名索引图" : QFileInfo(projectPath).fileName(), dirty ? " *" : ""));
 }
 void Window::startPreview() {
@@ -669,7 +681,7 @@ void Window::changeSelected(int degrees, bool reset) {
 void Window::report(const QString &message) {
     statusBar()->showMessage(message);
     if (smokeDir.isEmpty())
-        QMessageBox::warning(this, "FilmLog Index Studio", message);
+        QMessageBox::warning(this, "Film Index Studio", message);
 }
 bool Window::confirmDiscard() {
     if (!dirty)
@@ -682,11 +694,11 @@ bool Window::confirmDiscard() {
 bool Window::saveProject(bool saveAs) {
     QString path = projectPath;
     if (path.isEmpty() || saveAs)
-        path = QFileDialog::getSaveFileName(this, "保存项目", path, "FilmLog 索引图项目 (*.flindex)");
+        path = QFileDialog::getSaveFileName(this, "保存项目", path, "Film Index Studio 项目 (*.findex)");
     if (path.isEmpty())
         return false;
-    if (!path.endsWith(".flindex", Qt::CaseInsensitive))
-        path += ".flindex";
+    if (!path.endsWith(".findex", Qt::CaseInsensitive))
+        path += ".findex";
     QString error;
     if (!saveDocument(doc, path, &error)) {
         report(error);
@@ -701,8 +713,9 @@ bool Window::saveProject(bool saveAs) {
 void Window::openProject(const QString &given) {
     if (exporting || !confirmDiscard())
         return;
-    QString path =
-        given.isEmpty() ? QFileDialog::getOpenFileName(this, "打开项目", {}, "FilmLog 索引图项目 (*.flindex)") : given;
+    QString path = given.isEmpty()
+                       ? QFileDialog::getOpenFileName(this, "打开项目", {}, "Film Index Studio 项目 (*.findex)")
+                       : given;
     if (path.isEmpty())
         return;
     Document next;
@@ -734,9 +747,9 @@ void Window::exportImage(const QString &given) {
     QString path = given;
     if (path.isEmpty()) {
         QString filter = "JPEG 图像 (*.jpg)";
-        path = QFileDialog::getSaveFileName(this, "导出当前索引图",
-                                            lastExport.isEmpty() ? "FilmLog-index.jpg" : lastExport,
-                                            "JPEG 图像 (*.jpg);;PNG 图像 (*.png)", &filter);
+        path =
+            QFileDialog::getSaveFileName(this, "导出当前索引图", lastExport.isEmpty() ? "Film-index.jpg" : lastExport,
+                                         "JPEG 图像 (*.jpg);;PNG 图像 (*.png)", &filter);
         if (path.isEmpty())
             return;
         if (QFileInfo(path).suffix().isEmpty())
@@ -828,7 +841,7 @@ void Window::dragEnterEvent(QDragEnterEvent *e) {
 }
 void Window::dropEvent(QDropEvent *e) {
     auto paths = urlPaths(e->mimeData());
-    if (paths.size() == 1 && paths[0].endsWith(".flindex", Qt::CaseInsensitive))
+    if (paths.size() == 1 && paths[0].endsWith(".findex", Qt::CaseInsensitive))
         openProject(paths[0]);
     else
         addFiles(paths);
@@ -838,6 +851,8 @@ void Window::startSmokeTest(const QString &directory) {
     smokeDir = QFileInfo(directory).absoluteFilePath();
     QDir().mkpath(smokeDir + "/samples");
     doc.options.title = "城市漫游 · 秋日光影";
+    doc.options.brand = "Film Index Studio";
+    doc.options.headerAlignment = 1;
     doc.options.note = "2026 / CONTACT SHEET";
     doc.options.film = "KODAK GOLD 200";
     doc.options.iso = "200";
@@ -881,7 +896,7 @@ void Window::startSmokeTest(const QString &directory) {
     changeSelected(180);
     cropX->setValue(20);
     QString error;
-    saveDocument(doc, smokeDir + "/示例项目.flindex", &error);
+    saveDocument(doc, smokeDir + "/示例项目.findex", &error);
     QTimer::singleShot(60000, this, [this] {
         if (exporting && exportControl)
             exportControl->canceled.store(true);

@@ -1,5 +1,6 @@
 /build/
 /dist/
 /test-artifacts/
+/work/
 *.user
-*.flindex
+*.findex

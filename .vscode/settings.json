@@ -3,5 +3,5 @@
   "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
   "C_Cpp.default.compilerPath": "${env:USERPROFILE}/Documents/DevTools/TransWithAI/Qt/Tools/mingw1310_64/bin/g++.exe",
   "files.encoding": "utf8",
-  "files.associations": {"*.flindex":"json"}
+  "files.associations": {"*.findex":"json"}
 }

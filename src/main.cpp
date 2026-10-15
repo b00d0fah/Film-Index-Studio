@@ -5,9 +5,9 @@
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
-    app.setApplicationName("FilmLog Index Studio");
-    app.setOrganizationName("FilmLogIndexStudio");
-    app.setApplicationVersion("1.0.0");
+    app.setApplicationName("Film Index Studio");
+    app.setOrganizationName("FilmIndexStudio");
+    app.setApplicationVersion("1.0.1");
     app.setStyle(QStyleFactory::create("Fusion"));
     QImageReader::setAllocationLimit(512);
     Window window;

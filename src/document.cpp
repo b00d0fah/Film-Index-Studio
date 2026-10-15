@@ -19,9 +19,10 @@ QString validateDocument(const Document &d, bool requirePhotos) {
         return "135 模板单张索引图最多支持 42 张照片。";
     if (!templateNames().contains(o.filmTemplate))
         return "胶片模板不存在。";
-    if (o.headerHeight < 180 || o.headerHeight > 1000 || o.border < 0 || o.border > 200 || o.gap < 0 || o.gap > 200 ||
-        o.outputWidth < 600 || o.outputWidth > 9000 || o.quality < 1 || o.quality > 100 || o.brandSize < 20 ||
-        o.brandSize > 180 || o.titleSize < 20 || o.titleSize > 120 || o.infoSize < 16 || o.infoSize > 80)
+    if (o.headerAlignment < 0 || o.headerAlignment > 2 || o.headerHeight < 180 || o.headerHeight > 1000 ||
+        o.border < 0 || o.border > 200 || o.gap < 0 || o.gap > 200 || o.outputWidth < 600 || o.outputWidth > 9000 ||
+        o.quality < 1 || o.quality > 100 || o.brandSize < 20 || o.brandSize > 180 || o.titleSize < 20 ||
+        o.titleSize > 120 || o.infoSize < 16 || o.infoSize > 80)
         return "排版参数超出支持范围。";
     if (!o.background.isValid() || !o.headerColor.isValid() || !o.textColor.isValid() || !o.matColor.isValid())
         return "颜色值无效。";
@@ -44,6 +45,7 @@ bool saveDocument(const Document &d, const QString &path, QString *error) {
     SAVE_FIELD(details);
     SAVE_FIELD(autoRotate);
     SAVE_FIELD(fit);
+    SAVE_FIELD(headerAlignment);
     SAVE_FIELD(headerHeight);
     SAVE_FIELD(border);
     SAVE_FIELD(gap);
@@ -77,8 +79,7 @@ bool saveDocument(const Document &d, const QString &path, QString *error) {
         return false;
     }
     QByteArray data =
-        QJsonDocument(
-            QJsonObject{{"format", "FilmLogIndexStudio"}, {"version", 1}, {"options", opts}, {"photos", photos}})
+        QJsonDocument(QJsonObject{{"format", "FilmIndexStudio"}, {"version", 1}, {"options", opts}, {"photos", photos}})
             .toJson();
     if (file.write(data) != data.size() || !file.commit()) {
         *error = file.errorString();
@@ -98,9 +99,9 @@ bool loadDocument(const QString &path, Document *doc, QString *error) {
     }
     QJsonParseError pe;
     const auto root = QJsonDocument::fromJson(f.readAll(), &pe).object();
-    if (pe.error != QJsonParseError::NoError || root["format"] != "FilmLogIndexStudio" ||
-        root["version"].toInt() != 1 || !root["options"].isObject() || !root["photos"].isArray()) {
-        *error = "不是有效的 FilmLog Index Studio 项目。";
+    if (pe.error != QJsonParseError::NoError || root["format"] != "FilmIndexStudio" || root["version"].toInt() != 1 ||
+        !root["options"].isObject() || !root["photos"].isArray()) {
+        *error = "不是有效的 Film Index Studio 项目。";
         return false;
     }
     Document result;
@@ -133,6 +134,7 @@ bool loadDocument(const QString &path, Document *doc, QString *error) {
     READ_INT(brandSize);
     READ_INT(titleSize);
     READ_INT(infoSize);
+    READ_INT(headerAlignment);
     READ_BOOL(header);
     READ_BOOL(details);
     READ_BOOL(autoRotate);

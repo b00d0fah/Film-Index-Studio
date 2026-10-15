@@ -54,19 +54,35 @@ QSize outputSize(const Document &d, int width) {
         width = d.options.outputWidth;
     return {width, qRound(double(size.height()) * width / size.width())};
 }
+qreal alignedTextX(const QRectF &column, qreal textWidth, int alignment) {
+    const qreal available = qMax<qreal>(0, column.width() - textWidth);
+    if (alignment == 1)
+        return column.x() + available / 2;
+    if (alignment == 2)
+        return column.x() + available;
+    return column.x();
+}
 static void textLine(QPainter &p, const QRectF &rect, const QString &s, int size, const QColor &color,
-                     bool bold = false) {
+                     Qt::Alignment align, bool bold = false) {
     QFont f("Microsoft YaHei UI");
     f.setPixelSize(size);
     f.setBold(bold);
     p.setFont(f);
     p.setPen(color);
-    p.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, QFontMetricsF(f).elidedText(s, Qt::ElideRight, rect.width()));
+    const QFontMetricsF metrics(f);
+    const QString visible = metrics.elidedText(s, Qt::ElideRight, rect.width());
+    const double textWidth = metrics.horizontalAdvance(visible);
+    const int alignment = (align & Qt::AlignHCenter) ? 1 : ((align & Qt::AlignRight) ? 2 : 0);
+    const double x = alignedTextX(rect, textWidth, alignment);
+    p.drawText(QRectF(x, rect.y(), textWidth, rect.height()), Qt::AlignLeft | Qt::AlignVCenter, visible);
 }
 static void header(QPainter &p, const Options &o, int width) {
     p.fillRect(QRect(0, 0, width, o.headerHeight), o.headerColor);
     p.fillRect(QRect(0, o.headerHeight - 12, width, 5), o.textColor);
     double leftWidth = o.details ? width * .50 - 144 : width - 144;
+    const double leftX = 72;
+    const double rightX = o.details ? width * .53 : leftX;
+    const double rightWidth = o.details ? width * .47 - 72 : 0;
     double noteHeight = o.note.isEmpty() ? 0 : o.infoSize * 1.7;
     double brandHeight = o.brand.isEmpty() ? 0 : o.brandSize * 1.6;
     double h = brandHeight + noteHeight;
@@ -74,10 +90,12 @@ static void header(QPainter &p, const Options &o, int width) {
     p.save();
     p.setClipRect(0, 0, width, o.headerHeight - 12);
     double y = (o.headerHeight - h * compression) / 2;
-    textLine(p, {72, y, leftWidth, brandHeight * compression}, o.brand, qMax(1, qRound(o.brandSize * compression)),
-             o.textColor, true);
-    textLine(p, {72, y + brandHeight * compression, leftWidth, noteHeight * compression}, o.note,
-             qMax(1, qRound(o.infoSize * compression)), o.textColor);
+    const Qt::Alignment textAlign =
+        o.headerAlignment == 1 ? Qt::AlignHCenter : (o.headerAlignment == 2 ? Qt::AlignRight : Qt::AlignLeft);
+    textLine(p, {leftX, y, leftWidth, brandHeight * compression}, o.brand, qMax(1, qRound(o.brandSize * compression)),
+             o.textColor, textAlign, true);
+    textLine(p, {leftX, y + brandHeight * compression, leftWidth, noteHeight * compression}, o.note,
+             qMax(1, qRound(o.infoSize * compression)), o.textColor, textAlign);
     if (o.details) {
         QStringList lines;
         QVector<int> sizes;
@@ -102,8 +120,10 @@ static void header(QPainter &p, const Options &o, int width) {
         double yy = (o.headerHeight - total * factor) / 2;
         for (int i = 0; i < lines.size(); ++i) {
             double lineH = sizes[i] * 1.7 * factor;
-            textLine(p, {width * .53, yy, width * .47 - 72, lineH}, lines[i], qMax(1, qRound(sizes[i] * factor)),
-                     o.textColor, i == 0 && !o.title.isEmpty());
+            // The right metadata owns its column. Keep it left-aligned so the user-selected
+            // alignment of the brand/note block cannot collide with it.
+            textLine(p, {rightX, yy, rightWidth, lineH}, lines[i], qMax(1, qRound(sizes[i] * factor)), o.textColor,
+                     Qt::AlignLeft, i == 0 && !o.title.isEmpty());
             yy += lineH;
         }
     }

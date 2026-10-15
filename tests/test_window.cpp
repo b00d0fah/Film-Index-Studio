@@ -32,6 +32,16 @@ class WindowTest : public QObject {
         auto border = window.findChild<QSpinBox *>("borderSize");
         auto gap = window.findChild<QSpinBox *>("stripGap");
         auto title = window.findChild<QLineEdit *>("titleText");
+        auto mainTitle = window.findChild<QLineEdit *>("mainTitle");
+        auto alignment = window.findChild<QComboBox *>("headerAlignment");
+        QStringList formLabels;
+        for (auto label : window.findChildren<QLabel *>())
+            if (label->buddy())
+                formLabels << label->text();
+        QVERIFY(formLabels.contains("主标题"));
+        QVERIFY(formLabels.contains("主标题字号"));
+        QVERIFY(!formLabels.contains("品牌文字"));
+        QVERIFY(!formLabels.contains("品牌字号"));
         for (int i = 0; i < 5; ++i) {
             border->setValue(40 + i * 10);
             gap->setValue(30 + i * 5);
@@ -53,6 +63,20 @@ class WindowTest : public QObject {
             if (auto pix = qgraphicsitem_cast<QGraphicsPixmapItem *>(item))
                 shown = pix->pixmap().toImage();
         QCOMPARE(shown.convertToFormat(QImage::Format_RGB32), expectedImage.convertToFormat(QImage::Format_RGB32));
+        QVERIFY(alignment);
+        QVERIFY(mainTitle);
+        alignment->setCurrentIndex(1);
+        expected.options.headerAlignment = 1;
+        QTRY_VERIFY_WITH_TIMEOUT(info->text().contains(dimensions), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            [&] {
+                for (auto item : view->scene()->items())
+                    if (auto pix = qgraphicsitem_cast<QGraphicsPixmapItem *>(item))
+                        return pix->pixmap().toImage().convertToFormat(QImage::Format_RGB32) ==
+                               renderSheet(expected, 1600).image.convertToFormat(QImage::Format_RGB32);
+                return false;
+            }(),
+            10000);
         // Clicking the preview chooses the matching source photo.
         auto rect = photoRect(expected, 5);
         double scale = 1600.0 / baseSheetSize(expected).width();
