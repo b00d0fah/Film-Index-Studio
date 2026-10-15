@@ -6,6 +6,8 @@ Qt 6.8.3 is dynamically linked and distributed under LGPL-3.0 (with applicable Q
 
 Qt source for the exact version: https://download.qt.io/official_releases/qt/6.8/6.8.3/submodules/ (qtbase, qtimageformats and qtsvg). Qt licensing information: https://www.qt.io/licensing/open-source-lgpl-obligations . Component notices are included under licenses, including Qt SPDX metadata and bundled library licenses.
 
+The embedded qtbase_zh_CN.qm translation is from Qt 6.8.3 qttranslations, distributed under the corresponding Qt license. Its source is available in the qttranslations submodule at the same versioned source location above.
+
 MinGW GCC runtime libraries are distributed with the GCC Runtime Library Exception. Winpthreads retains its own permissive license. Corresponding notices are included under licenses/gcc and licenses/winpthreads.
 
-No third-party font is bundled. The UI and generated headers use the system Microsoft YaHei UI font (or the system fallback). Sample illustrations used for verification are generated locally and do not contain user photographs.
+No third-party font is bundled. The UI and default header font use system Microsoft YaHei UI (or system fallback). Users can choose other installed fonts or import their own fonts; imported font files are copied into saved preset assets. Sample illustrations used for verification are generated locally and do not contain user photographs. The Film Index logo is an original vector mark created for this application; its source and generation script are included.

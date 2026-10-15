@@ -5,6 +5,83 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void initTestCase() {
+        QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
+    }
+    void chineseDialogsAndPresetKeepsPhotos() {
+        QTranslator chinese;
+        QVERIFY(chinese.load(":/assets/translations/qtbase_zh_CN.qm"));
+        qApp->installTranslator(&chinese);
+        QLineEdit input;
+        auto menu = input.createStandardContextMenu();
+        bool translated = false;
+        for (auto action : menu->actions())
+            if (action->text().contains("撤"))
+                translated = true;
+        delete menu;
+        QVERIFY(translated);
+        QColorDialog colors;
+        colors.setOption(QColorDialog::DontUseNativeDialog);
+        auto buttons = colors.findChild<QDialogButtonBox *>();
+        QVERIFY(buttons);
+        QVERIFY(buttons->button(QDialogButtonBox::Cancel)->text().contains("取消"));
+        qApp->removeTranslator(&chinese);
+        QTemporaryDir temp;
+        QImage image(300, 200, QImage::Format_RGB32);
+        image.fill(Qt::green);
+        auto path = temp.filePath("photo.png");
+        QVERIFY(image.save(path));
+        Options options;
+        options.brand = "预设恢复测试";
+        options.previewWidth = 900;
+        QString error;
+        auto preset = temp.filePath("test.fipreset");
+        QVERIFY2(savePreset(options, preset, &error), qUtf8Printable(error));
+        Window window;
+        window.show();
+        auto list = window.findChild<PhotoList *>("photoList");
+        list->filesDropped({path});
+        QCOMPARE(list->count(), 1);
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(preset)});
+        QDragEnterEvent enter(QPoint(20, 20), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &enter);
+        QDropEvent drop(QPointF(20, 20), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &drop);
+        QCOMPARE(list->count(), 1);
+        QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), options.brand);
+        QTRY_COMPARE_WITH_TIMEOUT(int(window.findChild<Preview *>("preview")->sceneRect().width()), 900, 10000);
+    }
+    void zoomPreservesViewAndResolution() {
+        Preview view;
+        view.resize(800, 500);
+        view.show();
+        Document d;
+        d.photos.resize(42);
+        QImage img(1600, 2200, QImage::Format_RGB32);
+        img.fill(Qt::white);
+        view.setImage(img, d);
+        view.zoom(6);
+        view.centerOn(1000, 1600);
+        QTest::qWait(30);
+        QPointF before = view.mapToScene(view.viewport()->rect().center());
+        double zoom = view.transform().m11();
+        view.setImage(img, d);
+        QVERIFY(QLineF(before, view.mapToScene(view.viewport()->rect().center())).length() < 4);
+        QCOMPARE(view.transform().m11(), zoom);
+        QImage larger(3200, 4400, QImage::Format_RGB32);
+        larger.fill(Qt::white);
+        view.setImage(larger, d);
+        QVERIFY(QLineF(before * 2, view.mapToScene(view.viewport()->rect().center())).length() < 5);
+        QCOMPARE(view.transform().m11(), zoom / 2);
+        view.focusRegion(photoRect(d, 25), baseSheetSize(d).width());
+        auto target = photoRect(d, 25).center() * (3200.0 / baseSheetSize(d).width());
+        QVERIFY(QLineF(target, view.mapToScene(view.viewport()->rect().center())).length() < 5);
+        view.fit();
+        zoom = view.transform().m11();
+        view.focusRegion(photoRect(d, 25), baseSheetSize(d).width());
+        QCOMPARE(view.transform().m11(), zoom);
+    }
     void realtimePreviewAndEditing() {
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -65,6 +142,13 @@ class WindowTest : public QObject {
         QCOMPARE(shown.convertToFormat(QImage::Format_RGB32), expectedImage.convertToFormat(QImage::Format_RGB32));
         QVERIFY(alignment);
         QVERIFY(mainTitle);
+        QCOMPARE(mainTitle->text(), QString("Film Index"));
+        QCOMPARE(window.findChild<QSpinBox *>("infoSize")->value(), 60);
+        auto customX = window.findChild<QSpinBox *>("leftX");
+        QVERIFY(customX);
+        QVERIFY(!customX->isEnabled());
+        alignment->setCurrentIndex(3);
+        QVERIFY(customX->isEnabled());
         alignment->setCurrentIndex(1);
         expected.options.headerAlignment = 1;
         QTRY_VERIFY_WITH_TIMEOUT(info->text().contains(dimensions), 10000);
@@ -82,6 +166,23 @@ class WindowTest : public QObject {
         double scale = 1600.0 / baseSheetSize(expected).width();
         QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(rect.center() * scale));
         QCOMPARE(list->currentRow(), 5);
+        view->zoom(4);
+        auto crop = window.findChild<QSlider *>("cropX");
+        crop->setValue(75);
+        QTRY_VERIFY_WITH_TIMEOUT(info->text().contains(dimensions), 10000);
+        const QPointF target = photoRect(expected, 5).center() * scale;
+        // Near sheet edges the view clamps scrolling; the edited photo must at least be visible.
+        QVERIFY(view->viewport()->rect().contains(view->mapFromScene(target)));
+        auto quality = window.findChild<QSpinBox *>("previewWidth");
+        QVERIFY(quality);
+        quality->setValue(2400);
+        QTRY_COMPARE_WITH_TIMEOUT(int(view->sceneRect().width()), 2400, 10000);
+        auto progress = window.findChild<QProgressBar *>("thumbnailProgress");
+        QVERIFY(progress);
+        QTRY_VERIFY_WITH_TIMEOUT(!progress->isVisible(), 10000);
+        QVERIFY(!list->item(0)->icon().isNull());
+        for (auto b : window.findChildren<QPushButton *>())
+            QVERIFY(b->text() != "新建" && b->text() != "打开项目" && b->text() != "保存项目");
         // Removal during preview work must not leave a stale image behind.
         list->selectAll();
         list->setFocus();

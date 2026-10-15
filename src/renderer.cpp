@@ -40,13 +40,13 @@ static constexpr int stripWidth = 4502, stripHeight = 700;
 QSize baseSheetSize(const Document &d) {
     const auto &o = d.options;
     int rows = (d.photos.size() + 5) / 6;
-    return {stripWidth + 2 * o.border,
-            (o.header ? o.headerHeight + o.gap : o.border) + rows * stripHeight + qMax(0, rows - 1) * o.gap + o.border};
+    return {stripWidth + 2 * o.border, (o.header ? o.headerHeight + o.headerGap : o.border) + rows * stripHeight +
+                                           qMax(0, rows - 1) * o.gap + o.border};
 }
 QRectF photoRect(const Document &d, int i) {
     const auto &o = d.options;
     return {double(o.border + 26 + (i % 6) * 746),
-            double((o.header ? o.headerHeight + o.gap : o.border) + (i / 6) * (700 + o.gap) + 110), 720, 480};
+            double((o.header ? o.headerHeight + o.headerGap : o.border) + (i / 6) * (700 + o.gap) + 110), 720, 480};
 }
 QSize outputSize(const Document &d, int width) {
     const QSize size = baseSheetSize(d);
@@ -62,72 +62,158 @@ qreal alignedTextX(const QRectF &column, qreal textWidth, int alignment) {
         return column.x() + available;
     return column.x();
 }
-static void textLine(QPainter &p, const QRectF &rect, const QString &s, int size, const QColor &color,
-                     Qt::Alignment align, bool bold = false) {
-    QFont f("Microsoft YaHei UI");
-    f.setPixelSize(size);
-    f.setBold(bold);
-    p.setFont(f);
-    p.setPen(color);
-    const QFontMetricsF metrics(f);
-    const QString visible = metrics.elidedText(s, Qt::ElideRight, rect.width());
-    const double textWidth = metrics.horizontalAdvance(visible);
-    const int alignment = (align & Qt::AlignHCenter) ? 1 : ((align & Qt::AlignRight) ? 2 : 0);
-    const double x = alignedTextX(rect, textWidth, alignment);
-    p.drawText(QRectF(x, rect.y(), textWidth, rect.height()), Qt::AlignLeft | Qt::AlignVCenter, visible);
-}
-static void header(QPainter &p, const Options &o, int width) {
-    p.fillRect(QRect(0, 0, width, o.headerHeight), o.headerColor);
-    p.fillRect(QRect(0, o.headerHeight - 12, width, 5), o.textColor);
-    double leftWidth = o.details ? width * .50 - 144 : width - 144;
-    const double leftX = 72;
-    const double rightX = o.details ? width * .53 : leftX;
-    const double rightWidth = o.details ? width * .47 - 72 : 0;
-    double noteHeight = o.note.isEmpty() ? 0 : o.infoSize * 1.7;
-    double brandHeight = o.brand.isEmpty() ? 0 : o.brandSize * 1.6;
-    double h = brandHeight + noteHeight;
-    double compression = qMin(1.0, (o.headerHeight - 40.0) / qMax(1.0, h));
-    p.save();
-    p.setClipRect(0, 0, width, o.headerHeight - 12);
-    double y = (o.headerHeight - h * compression) / 2;
-    const Qt::Alignment textAlign =
-        o.headerAlignment == 1 ? Qt::AlignHCenter : (o.headerAlignment == 2 ? Qt::AlignRight : Qt::AlignLeft);
-    textLine(p, {leftX, y, leftWidth, brandHeight * compression}, o.brand, qMax(1, qRound(o.brandSize * compression)),
-             o.textColor, textAlign, true);
-    textLine(p, {leftX, y + brandHeight * compression, leftWidth, noteHeight * compression}, o.note,
-             qMax(1, qRound(o.infoSize * compression)), o.textColor, textAlign);
-    if (o.details) {
-        QStringList lines;
-        QVector<int> sizes;
-        auto add = [&](const QString &s, int fs) {
-            if (!s.trimmed().isEmpty()) {
-                lines << s;
-                sizes << fs;
-            }
-        };
-        auto joined = [](QStringList values) {
-            values.removeAll("");
-            return values.join("  ·  ");
-        };
-        add(o.title, o.titleSize);
-        add(joined({o.film, o.iso.isEmpty() ? QString() : "ISO " + o.iso}), o.infoSize);
-        add(joined({o.location, o.date}), o.infoSize);
-        add(joined({o.camera, o.lens}), o.infoSize);
-        double total = 0;
-        for (int fs : sizes)
-            total += fs * 1.7;
-        double factor = qMin(1.0, (o.headerHeight - 40.0) / qMax(1.0, total));
-        double yy = (o.headerHeight - total * factor) / 2;
-        for (int i = 0; i < lines.size(); ++i) {
-            double lineH = sizes[i] * 1.7 * factor;
-            // The right metadata owns its column. Keep it left-aligned so the user-selected
-            // alignment of the brand/note block cannot collide with it.
-            textLine(p, {rightX, yy, rightWidth, lineH}, lines[i], qMax(1, qRound(sizes[i] * factor)), o.textColor,
-                     Qt::AlignLeft, i == 0 && !o.title.isEmpty());
-            yy += lineH;
+
+struct HeaderLine {
+    QString text;
+    QRectF rect;
+    QFont font;
+    QColor color;
+    int block;
+};
+static QVector<HeaderLine> headerLines(const Options &o, int width) {
+    QVector<HeaderLine> result;
+    auto joined = [](QStringList v) {
+        v.removeAll("");
+        return v.join("  ·  ");
+    };
+    const QStringList values{o.brand,
+                             o.note,
+                             o.title,
+                             joined({o.film, o.iso.isEmpty() ? QString() : "ISO " + o.iso}),
+                             joined({o.location, o.date}),
+                             joined({o.camera, o.lens})};
+    const int sizes[]{o.brandSize, o.infoSize, o.titleSize, o.infoSize, o.infoSize, o.infoSize};
+    for (int side = 0; side < (o.details ? 2 : 1); ++side) {
+        const QRectF column = side == 0
+                                  ? QRectF(72, 20, o.details ? width * .50 - 144 : width - 144, o.headerHeight - 40)
+                                  : QRectF(width * .53, 20, width * .47 - 72, o.headerHeight - 40);
+        const int begin = side == 0 ? 0 : 2, end = side == 0 ? 2 : 6;
+        const int align = side == 0 ? o.headerAlignment : o.rightAlignment;
+        double height = 0;
+        for (int i = begin; i < end; ++i)
+            if (!values[i].isEmpty())
+                height += sizes[i] * 1.7;
+        const double compression = qMin(1.0, column.height() / qMax(1.0, height));
+        height *= compression;
+        double y = column.top() + (align == 3 ? qMin(column.height() - height, double(side == 0 ? o.leftY : o.rightY))
+                                              : (column.height() - height) * .5);
+        // A common left edge in custom mode keeps each block intact. Its widest line sets the travel range.
+        double blockWidth = 0;
+        for (int i = begin; i < end; ++i) {
+            QFont f(o.textStyles[i].family);
+            f.setPixelSize(qMax(1, qRound(sizes[i] * compression)));
+            f.setBold(i == 0 || i == 2);
+            blockWidth = qMax(blockWidth, QFontMetricsF(f).horizontalAdvance(values[i]));
+        }
+        blockWidth = qMin(blockWidth, column.width());
+        const double customX =
+            column.left() + qMin(column.width() - blockWidth, double(side == 0 ? o.leftX : o.rightX));
+        for (int i = begin; i < end; ++i) {
+            if (values[i].isEmpty())
+                continue;
+            QFont f(o.textStyles[i].family);
+            f.setPixelSize(qMax(1, qRound(sizes[i] * compression)));
+            f.setBold(i == 0 || i == 2);
+            QFontMetricsF metrics(f);
+            const QString visible = metrics.elidedText(values[i], Qt::ElideRight, column.width());
+            double tw = qMin(column.width(), metrics.horizontalAdvance(visible));
+            double x = align == 3 ? customX : alignedTextX(column, tw, align);
+            const double lineHeight = sizes[i] * 1.7 * compression;
+            result.append({visible, {x, y, tw, lineHeight}, f, o.textStyles[i].color, i});
+            y += lineHeight;
         }
     }
+    return result;
+}
+QRectF headerBlockRect(const Options &o, int width, int block) {
+    for (const auto &line : headerLines(o, width))
+        if (line.block == block)
+            return line.rect;
+    return block < 2 ? QRectF(72, 20, width * .45, o.headerHeight - 40)
+                     : QRectF(width * .53, 20, width * .45, o.headerHeight - 40);
+}
+static QString backgroundImage(QPainter &p, const QRectF &dest, const ImageLayer &layer, double scale) {
+    if (layer.path.isEmpty() || layer.opacity == 0)
+        return {};
+    QImageReader reader(layer.path);
+    reader.setAutoTransform(true);
+    QImage image = readPhoto(reader, qMax(512, qCeil(qMax(dest.width(), dest.height()) * scale)), true);
+    if (image.isNull())
+        return "背景图片无法读取：" + layer.path;
+    double w = image.width(), h = image.height();
+    const double aspect = dest.width() / dest.height();
+    if (w / h > aspect)
+        w = h * aspect;
+    else
+        h = w / aspect;
+    QRectF source((image.width() - w) * layer.cropX / 100.0, (image.height() - h) * layer.cropY / 100.0, w, h);
+    p.save();
+    p.setClipRect(dest);
+    p.setOpacity(layer.opacity / 100.0);
+    p.drawImage(dest, image, source);
     p.restore();
+    return {};
+}
+static void header(QPainter &p, const Options &o, int width) {
+    for (const auto &line : headerLines(o, width)) {
+        p.save();
+        // Clip each column, including glyph overhang from italic/custom fonts.
+        p.setClipRect(line.block < 2 ? QRectF(72, 0, o.details ? width * .50 - 144 : width - 144, o.headerHeight)
+                                     : QRectF(width * .53, 0, width * .47 - 72, o.headerHeight));
+        p.setFont(line.font);
+        p.setPen(line.color);
+        p.drawText(line.rect, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, line.text);
+        p.restore();
+    }
+}
+QRectF overlayRect(const Overlay &o, const QRectF &area, bool logo) {
+    QSizeF size;
+    if (!logo && o.type == 0) {
+        QFont f(o.style.family);
+        f.setPixelSize(o.size);
+        const QFontMetricsF metrics(f);
+        size = {qMax(1.0, metrics.horizontalAdvance(o.text)), metrics.height()};
+    } else {
+        QImageReader r(o.path.isEmpty() && logo ? ":/assets/logo.png" : o.path);
+        size = r.size();
+        if (size.isEmpty())
+            size = {1, 1};
+        size.scale(o.size, o.size, Qt::KeepAspectRatio);
+    }
+    if (size.width() > area.width() || size.height() > area.height())
+        size.scale(area.size(), Qt::KeepAspectRatio);
+    return {area.left() + (area.width() - size.width()) * o.x / 100.0,
+            area.top() + (area.height() - size.height()) * o.y / 100.0, size.width(), size.height()};
+}
+static QString drawOverlay(QPainter &p, const Overlay &o, const QRectF &area, bool logo) {
+    if (!o.enabled || o.opacity == 0)
+        return {};
+    const QRectF rect = overlayRect(o, area, logo);
+    p.save();
+    p.setClipRect(area);
+    p.setOpacity(o.opacity / 100.0);
+    QString error;
+    if (!logo && o.type == 0) {
+        QFont f(o.style.family);
+        f.setPixelSize(o.size);
+        QFontMetricsF metrics(f);
+        double scale =
+            qMin(rect.width() / qMax(1.0, metrics.horizontalAdvance(o.text)), rect.height() / metrics.height());
+        f.setPixelSize(qMax(1, qFloor(o.size * scale)));
+        p.setFont(f);
+        p.setPen(o.style.color);
+        p.drawText(rect, Qt::AlignCenter | Qt::TextSingleLine, o.text);
+    } else {
+        QImageReader reader(o.path.isEmpty() && logo ? ":/assets/logo.png" : o.path);
+        reader.setAutoTransform(true);
+        QImage img = readPhoto(reader, 2048, true);
+        if (img.isNull())
+            error = "Logo / 水印图片无法读取：" + reader.fileName();
+        else
+            p.drawImage(rect, img);
+    }
+    p.restore();
+    return error;
 }
 RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<RenderControl> &control) {
     RenderResult r;
@@ -152,8 +238,24 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
     double scale = double(size.width()) / baseSheetSize(d).width();
     painter.scale(scale, scale);
     const auto &o = d.options;
-    if (o.header)
-        header(painter, o, baseSheetSize(d).width());
+    canvas.setDotsPerMeterX(qRound(o.dpi / 0.0254));
+    canvas.setDotsPerMeterY(qRound(o.dpi / 0.0254));
+    const QSize base = baseSheetSize(d);
+    const double indexTop = o.header ? o.headerHeight : 0;
+    r.error =
+        backgroundImage(painter, {0, indexTop, double(base.width()), base.height() - indexTop}, o.indexImage, scale);
+    if (!r.error.isEmpty())
+        return r;
+    if (o.header) {
+        painter.fillRect(QRectF(0, 0, base.width(), o.headerHeight), o.headerColor);
+        r.error = backgroundImage(painter, {0, 0, double(base.width()), double(o.headerHeight)}, o.headerImage, scale);
+        if (!r.error.isEmpty())
+            return r;
+        header(painter, o, base.width());
+        r.error = drawOverlay(painter, o.logo, {20, 20, double(base.width() - 40), double(o.headerHeight - 40)}, true);
+        if (!r.error.isEmpty())
+            return r;
+    }
     const QImage sprocket(":/assets/film_strips/135/sprocket_strip.png");
     if (sprocket.isNull()) {
         r.error = "内置齿孔资源缺失。";
@@ -164,14 +266,13 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
             r.canceled = true;
             return r;
         }
-        const QString asset =
-            QString(":/assets/film_strips/135/%1/%2-%3.png").arg(o.filmTemplate).arg(row * 6 + 1).arg(row * 6 + 6);
+        const QString asset = templateFile(o, row);
         QImage strip(asset);
         if (strip.isNull() || strip.size() != QSize(stripWidth, stripHeight)) {
             r.error = "胶片模板损坏：" + asset;
             return r;
         }
-        int sy = (o.header ? o.headerHeight + o.gap : o.border) + row * (700 + o.gap);
+        int sy = (o.header ? o.headerHeight + o.headerGap : o.border) + row * (700 + o.gap);
         painter.drawImage(QPoint(o.border, sy), strip);
         for (int col = 0; col < 6; ++col) {
             int i = row * 6 + col;
@@ -187,7 +288,7 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
             QImageReader reader(photo.path);
             reader.setAutoTransform(true);
             int decodeEdge = qMax(720, qCeil(1100 * scale));
-            QImage img = readPhoto(reader, decodeEdge, width > 0 && width <= 1600);
+            QImage img = readPhoto(reader, decodeEdge, width > 0);
             if (img.isNull()) {
                 r.error = QString("第 %1 张照片无法读取：%2\n%3").arg(i + 1).arg(photo.path, reader.errorString());
                 return r;
@@ -217,6 +318,9 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
         painter.drawImage(QPoint(o.border + 28, sy + 40), sprocket);
         painter.drawImage(QPoint(o.border + 28, sy + 600), sprocket);
     }
+    r.error = drawOverlay(painter, o.watermark, {20, 20, double(base.width() - 40), double(base.height() - 40)}, false);
+    if (!r.error.isEmpty())
+        return r;
     painter.end();
     if (canceled()) {
         r.canceled = true;

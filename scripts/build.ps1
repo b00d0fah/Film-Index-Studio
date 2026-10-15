@@ -13,16 +13,18 @@ cmake --build "$projectRoot\build" --parallel 6
 if($LASTEXITCODE){throw 'Build failed'}
 if($Test){ctest --test-dir "$projectRoot\build" --output-on-failure;if($LASTEXITCODE){throw 'Tests failed'}}
 if($Deploy){
-    $dist=Join-Path $projectRoot 'dist'
+    $dist=Join-Path $projectRoot 'dist\Film-Index-Studio-1.0.2'
     New-Item -ItemType Directory -Force $dist | Out-Null
-    Get-ChildItem -LiteralPath $dist -File -Filter 'FilmLog*' -ErrorAction SilentlyContinue | Remove-Item -Force
-    Get-ChildItem -LiteralPath $dist -File -Filter '*.bat' -ErrorAction SilentlyContinue | Remove-Item -Force
-    $smoke=Join-Path $dist 'smoke'
-    if(Test-Path -LiteralPath $smoke){Remove-Item -LiteralPath $smoke -Recurse -Force}
     Copy-Item "$projectRoot\build\FilmIndexStudio.exe" $dist
     & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "$dist\FilmIndexStudio.exe"
     if($LASTEXITCODE){throw 'Qt deployment failed'}
-    Copy-Item "$projectRoot\README.md","$projectRoot\LICENSE","$projectRoot\THIRD_PARTY_NOTICES.md" $dist
+    Copy-Item "$projectRoot\README.md","$projectRoot\USER_GUIDE.md","$projectRoot\LICENSE","$projectRoot\THIRD_PARTY_NOTICES.md" $dist
     Copy-Item "$projectRoot\licenses" $dist -Recurse -Force
     Copy-Item "$projectRoot\scripts\start-portable.bat" "$dist\FilmIndexStudio.bat"
+    New-Item -ItemType Directory -Force "$dist\templates","$dist\presets" | Out-Null
+    Get-ChildItem -LiteralPath "$projectRoot\assets\film_strips\135" -Directory | ForEach-Object {
+        $target=Join-Path "$dist\templates" $_.Name
+        if(!(Test-Path -LiteralPath $target)){Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse}
+    }
+    Copy-Item -LiteralPath "$projectRoot\assets\film_strips\README.md" -Destination "$dist\templates\README.md"
 }

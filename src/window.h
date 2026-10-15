@@ -12,6 +12,7 @@ class QSlider;
 class QProgressDialog;
 class QComboBox;
 class QCloseEvent;
+class QProgressBar;
 Q_DECLARE_METATYPE(Photo)
 
 class PhotoList : public QListWidget {
@@ -35,6 +36,7 @@ class Preview : public QGraphicsView {
     void fit();
     void zoom(double factor);
     void selectPhoto(int index);
+    void focusRegion(const QRectF &baseRect, double baseWidth);
   signals:
     void photoClicked(int index);
 
@@ -47,6 +49,7 @@ class Preview : public QGraphicsView {
     bool fitted = true;
     QVector<QRectF> frames;
     QGraphicsRectItem *selection = nullptr;
+    QGraphicsPixmapItem *pixmapItem = nullptr;
 };
 class Window : public QMainWindow {
     Q_OBJECT
@@ -69,6 +72,12 @@ class Window : public QMainWindow {
     QTimer debounce;
     QFutureWatcher<RenderResult> previewWatcher;
     QFutureWatcher<QString> exportWatcher;
+    QFutureWatcher<QVector<QPair<QString, QImage>>> thumbnailWatcher;
+    std::shared_ptr<RenderControl> thumbnailControl;
+    QHash<QString, QImage> thumbnails;
+    QProgressBar *previewProgress = nullptr, *thumbnailProgress = nullptr;
+    QTimer progressTimer;
+    int pendingFocus = 0;
     std::shared_ptr<RenderControl> previewControl, exportControl;
     QVector<std::function<void()>> bindings;
     QString projectPath, lastExport, smokeDir;
@@ -76,11 +85,12 @@ class Window : public QMainWindow {
     int revision = 0, renderingRevision = 0;
     void buildUi();
     void syncControls();
-    void changed();
+    void changed(int focus = -1);
     void updateTitle();
     void startPreview();
     void collectPhotos();
     void rebuildPhotos();
+    void startThumbnails();
     void addFiles(QStringList paths);
     void selectPhoto();
     void changeSelected(int rotationDelta, bool reset = false);

@@ -1,9 +1,13 @@
 #include "renderer.h"
 #include <QBuffer>
 #include <QColorSpace>
+#include <QCoreApplication>
 #include <QFile>
+#include <QFontDatabase>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -19,6 +23,7 @@ class CoreTest : public QObject {
     }
   private slots:
     void initTestCase() {
+        QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
         QVERIFY(temp.isValid());
         photo = temp.filePath("测试 照片.png");
         QImage img(600, 600, QImage::Format_RGB32);
@@ -30,9 +35,9 @@ class CoreTest : public QObject {
     }
     void geometry() {
         auto d = make(7);
-        QCOMPARE(baseSheetSize(d), QSize(4572, 1965));
-        QCOMPARE(photoRect(d, 0), QRectF(61, 615, 720, 480));
-        QCOMPARE(photoRect(d, 6), QRectF(61, 1340, 720, 480));
+        QCOMPARE(baseSheetSize(d), QSize(4572, 1975));
+        QCOMPARE(photoRect(d, 0), QRectF(61, 625, 720, 480));
+        QCOMPARE(photoRect(d, 6), QRectF(61, 1350, 720, 480));
         d.options.header = false;
         QCOMPARE(baseSheetSize(d), QSize(4572, 1495));
         QCOMPARE(outputSize(d, 2286), QSize(2286, 748));
@@ -162,6 +167,199 @@ class CoreTest : public QObject {
         QVERIFY(renderSheet(make(), 600, control).canceled);
         d = make();
         d.options.filmTemplate = "../bad";
+        QVERIFY(!validateDocument(d).isEmpty());
+    }
+    void headerGapHasNoSeparatorAndBackgroundsCrop() {
+        auto d = make();
+        d.options.brand.clear();
+        d.options.details = false;
+        d.options.headerGap = 180;
+        d.options.headerColor = QColor("#204060");
+        d.options.background = QColor("#80a0c0");
+        auto r = renderSheet(d, 4572);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        for (int y = d.options.headerHeight - 20; y < d.options.headerHeight + 180; ++y)
+            QCOMPARE(r.image.pixelColor(2, y),
+                     y < d.options.headerHeight ? d.options.headerColor : d.options.background);
+        QImage bg(100, 200, QImage::Format_RGB32);
+        bg.fill(Qt::red);
+        for (int y = 100; y < 200; ++y)
+            for (int x = 0; x < 100; ++x)
+                bg.setPixelColor(x, y, Qt::blue);
+        const QString path = temp.filePath("background.png");
+        QVERIFY(bg.save(path));
+        d.options.headerImage.path = path;
+        d.options.headerImage.cropY = 0;
+        d.options.indexImage.path = path;
+        d.options.indexImage.cropY = 100;
+        r = renderSheet(d, 4572);
+        QVERIFY(r.error.isEmpty());
+        QCOMPARE(r.image.pixelColor(2, 200), QColor(Qt::red));
+        QCOMPARE(r.image.pixelColor(2, 550), QColor(Qt::blue));
+        d.options.headerImage.opacity = 0;
+        d.options.indexImage.opacity = 0;
+        r = renderSheet(d, 4572);
+        QCOMPARE(r.image.pixelColor(2, 200), d.options.headerColor);
+        QCOMPARE(r.image.pixelColor(2, 550), d.options.background);
+        d.options.headerImage.opacity = 50;
+        r = renderSheet(d, 4572);
+        auto c = r.image.pixelColor(2, 200);
+        QVERIFY(c.red() > 130 && c.red() < 150 && c.blue() > 40 && c.blue() < 55);
+        d.options.header = false;
+        QCOMPARE(photoRect(d, 0).top(), 145.0); // headerGap has no effect with header disabled
+    }
+    void independentStylesAndCustomBounds() {
+        auto d = make();
+        auto &o = d.options;
+        o.brand = "主标题 Main";
+        o.title = "RIGHT TITLE";
+        o.note = "备注";
+        auto original = renderSheet(d, 1600);
+        QVERIFY(original.error.isEmpty());
+        o.rightAlignment = 2;
+        auto right = renderSheet(d, 1600);
+        QVERIFY(right.error.isEmpty());
+        const int hh = qRound(o.headerHeight * 1600.0 / baseSheetSize(d).width());
+        QCOMPARE(original.image.copy(0, 0, 750, hh), right.image.copy(0, 0, 750, hh));
+        QVERIFY(original.image.copy(850, 0, 750, hh) != right.image.copy(850, 0, 750, hh));
+        o.headerAlignment = 3;
+        o.rightAlignment = 3;
+        o.leftX = 4502;
+        o.leftY = 1000;
+        o.rightX = 4502;
+        o.rightY = 1000;
+        const auto left = headerBlockRect(o, 4572, 0), metadata = headerBlockRect(o, 4572, 2);
+        QVERIFY(left.right() < metadata.left());
+        QVERIFY(left.top() >= 20);
+        QVERIFY(metadata.bottom() <= o.headerHeight - 19);
+        o.headerAlignment = 0;
+        o.rightAlignment = 0;
+        // Custom coordinates must not affect standard alignments.
+        auto ignored = renderSheet(d, 1600);
+        QCOMPARE(ignored.image, original.image);
+        o.textStyles[0].color = Qt::red;
+        auto styled = renderSheet(d, 1600);
+        QVERIFY(styled.image != original.image);
+        QCOMPARE(styled.image.copy(850, 0, 750, hh), original.image.copy(850, 0, 750, hh));
+    }
+    void logoWatermarkAndPhysicalUnits() {
+        auto d = make();
+        auto baseline = renderSheet(d, 1600);
+        QVERIFY(baseline.error.isEmpty());
+        d.options.logo.enabled = true;
+        d.options.logo.x = 100;
+        d.options.logo.y = 100;
+        d.options.logo.size = 220;
+        auto logo = renderSheet(d, 1600);
+        QVERIFY2(logo.error.isEmpty(), qPrintable(logo.error));
+        QVERIFY(logo.image != baseline.image);
+        d.options.logo.opacity = 0;
+        QCOMPARE(renderSheet(d, 1600).image, baseline.image);
+        d.options.watermark.enabled = true;
+        d.options.watermark.text = "WATERMARK";
+        auto mark = renderSheet(d, 1600);
+        QVERIFY(mark.error.isEmpty());
+        QVERIFY(mark.image != baseline.image);
+        d.options.watermark.type = 1;
+        d.options.watermark.path = photo;
+        d.options.watermark.opacity = 100;
+        auto bitmap = renderSheet(d, 1600);
+        QVERIFY(bitmap.error.isEmpty());
+        QVERIFY(bitmap.image != mark.image);
+        d.options.watermark.opacity = 0;
+        QCOMPARE(renderSheet(d, 1600).image, baseline.image);
+        QCOMPARE(widthInPixels(25.4, 1, 300), 300);
+        QCOMPARE(widthInPixels(2.54, 2, 300), 300);
+        QCOMPARE(widthInPixels(1, 3, 600), 600);
+        QCOMPARE(widthInUnit(300, 1, 300), 25.4);
+        for (int unit = 0; unit < 4; ++unit)
+            QCOMPARE(widthInPixels(widthInUnit(4572, unit, 300), unit, 300), 4572);
+        d.options.dpi = 300;
+        auto output = renderSheet(d, 600);
+        QCOMPARE(output.image.dotsPerMeterX(), 11811);
+    }
+    void externalTemplateAndPortablePreset() {
+        const QString name = "自定义模板-" + QUuid::createUuid().toString(QUuid::Id128);
+        const QString source = temp.filePath(name);
+        QVERIFY(QDir().mkpath(source));
+        const QString imported = templatesDirectory() + '/' + name;
+        struct Cleanup {
+            QString path;
+            ~Cleanup() {
+                QDir(path).removeRecursively();
+            }
+        } cleanup{imported};
+        auto o = Options();
+        for (int row = 0; row < 7; ++row)
+            QVERIFY(QFile::copy(templateFile(o, row), source + '/' + QFileInfo(templateFile(o, row)).fileName()));
+        QString error, actual;
+        QVERIFY2(importTemplate(source, &actual, &error), qUtf8Printable(error));
+        QCOMPARE(actual, name);
+        QVERIFY(templateNames().contains(name));
+        QVERIFY(!templateNames().contains("kedak-version3-5203-50d"));
+        o.filmTemplate = name;
+        o.previewWidth = 2400;
+        o.headerGap = 99;
+        o.rightAlignment = 3;
+        o.rightX = 147;
+        o.textStyles[1].color = Qt::green;
+        o.headerImage.path = photo;
+        o.headerImage.opacity = 33;
+        o.watermark.enabled = true;
+        o.watermark.text = "TEST";
+        o.watermark.opacity = 64;
+        o.logo.enabled = true;
+        const QString preset = temp.filePath("预设.fipreset");
+        QVERIFY2(savePreset(o, preset, &error), qPrintable(error));
+        QFile f(preset);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        auto root = QJsonDocument::fromJson(f.readAll()).object();
+        QVERIFY(!root.contains("photos"));
+        QVERIFY(!root["options"].toObject()["headerImage"].toObject()["path"].toString().contains(temp.path()));
+        QVERIFY(QDir(imported).removeRecursively()); // preset must remain independent of original template installation
+        Options loaded;
+        QVERIFY2(loadPreset(preset, &loaded, &error), qPrintable(error));
+        QCOMPARE(loaded.previewWidth, 2400);
+        QCOMPARE(loaded.headerGap, 99);
+        QCOMPARE(loaded.rightX, 147);
+        QCOMPARE(loaded.textStyles[1].color, QColor(Qt::green));
+        QCOMPARE(loaded.watermark.opacity, 64);
+        QVERIFY(QFileInfo::exists(loaded.headerImage.path));
+        auto d = make(42);
+        d.options = loaded;
+        QVERIFY2(renderSheet(d, 600).error.isEmpty(), qPrintable(renderSheet(d, 600).error));
+        QVERIFY(QFile::setPermissions(source + "/37-42.png", QFile::ReadOwner | QFile::WriteOwner));
+        QVERIFY(QFile::remove(source + "/37-42.png"));
+        QVERIFY(!validateTemplate(source).isEmpty());
+        QVERIFY(!importTemplate(source, &actual, &error));
+    }
+    void importedFontPresetAndInvalidAssets() {
+        const QString systemFont = "C:/Windows/Fonts/arial.ttf";
+        if (!QFileInfo::exists(systemFont))
+            QSKIP("Windows font fixture unavailable");
+        const QString font = temp.filePath("user-font.ttf");
+        QVERIFY(QFile::copy(systemFont, font));
+        Options o;
+        o.textStyles[0].fontFile = font;
+        o.watermark.style.fontFile = font;
+        QString error;
+        QVERIFY2(activateFonts(&o, &error), qUtf8Printable(error));
+        const QString preset = temp.filePath("font-preset.fipreset");
+        QVERIFY2(savePreset(o, preset, &error), qUtf8Printable(error));
+        QFile::setPermissions(font, QFile::ReadOwner | QFile::WriteOwner);
+        QVERIFY(QFile::remove(font));
+        Options restored;
+        QVERIFY2(loadPreset(preset, &restored, &error), qUtf8Printable(error));
+        QVERIFY(!restored.textStyles[0].fontFile.isEmpty());
+        QVERIFY(QFileInfo::exists(restored.textStyles[0].fontFile));
+        QCOMPARE(restored.textStyles[0].family, o.textStyles[0].family);
+        auto d = make();
+        d.options = restored;
+        QVERIFY(renderSheet(d, 1200).error.isEmpty());
+        d.options.headerImage.path = temp.filePath("does-not-exist.png");
+        QVERIFY(!validateDocument(d).isEmpty());
+        d.options.headerImage.path.clear();
+        d.options.rightAlignment = 4;
         QVERIFY(!validateDocument(d).isEmpty());
     }
     void exportAndAtomicCancel() {

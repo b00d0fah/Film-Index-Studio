@@ -47,18 +47,34 @@ Preview::Preview(QWidget *p) : QGraphicsView(p) {
     setDragMode(ScrollHandDrag);
     setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
     setTransformationAnchor(AnchorUnderMouse);
+    setResizeAnchor(AnchorViewCenter);
     setObjectName("preview");
 }
 void Preview::clearImage() {
     scene()->clear();
     selection = nullptr;
+    pixmapItem = nullptr;
     frames.clear();
     scene()->setSceneRect({});
 }
 void Preview::setImage(const QImage &image, const Document &d) {
-    clearImage();
-    scene()->addPixmap(QPixmap::fromImage(image));
+    const QRectF old = scene()->sceneRect();
+    const QPointF center = mapToScene(viewport()->rect().center());
+    const QPointF relative =
+        old.isEmpty() ? QPointF(.5, .5) : QPointF(center.x() / old.width(), center.y() / old.height());
+    if (pixmapItem)
+        pixmapItem->setPixmap(QPixmap::fromImage(image));
+    else
+        pixmapItem = scene()->addPixmap(QPixmap::fromImage(image));
+    frames.clear();
     scene()->setSceneRect(QRectF(image.rect()));
+    if (!fitted && !old.isEmpty()) {
+        setTransformationAnchor(NoAnchor);
+        const double ratio = old.width() / image.width();
+        scale(ratio, ratio);
+        centerOn(relative.x() * image.width(), relative.y() * image.height());
+        setTransformationAnchor(AnchorUnderMouse);
+    }
     double s = double(image.width()) / baseSheetSize(d).width();
     for (int i = 0; i < d.photos.size(); ++i) {
         auto rect = photoRect(d, i);
@@ -66,10 +82,17 @@ void Preview::setImage(const QImage &image, const Document &d) {
     }
     QPen pen(QColor("#53e0bb"), 2);
     pen.setCosmetic(true);
-    selection = scene()->addRect({}, pen);
+    if (!selection)
+        selection = scene()->addRect({}, pen);
     selection->hide();
     if (fitted)
         fit();
+}
+void Preview::focusRegion(const QRectF &baseRect, double baseWidth) {
+    if (fitted || !pixmapItem || baseWidth <= 0)
+        return;
+    const double ratio = scene()->sceneRect().width() / baseWidth;
+    centerOn(baseRect.center() * ratio);
 }
 void Preview::fit() {
     fitted = true;
@@ -127,7 +150,40 @@ Window::Window() {
     setAcceptDrops(true);
     resize(1440, 900);
     setMinimumSize(1080, 680);
+    setWindowIcon(QIcon(":/assets/logo.png"));
     buildUi();
+    progressTimer.setInterval(60);
+    connect(&progressTimer, &QTimer::timeout, this, [this] {
+        if (previewWatcher.isRunning() && previewControl) {
+            previewProgress->setVisible(true);
+            previewProgress->setRange(0, qMax(1, int(doc.photos.size())));
+            previewProgress->setValue(previewControl->progress.load());
+        }
+        if (thumbnailWatcher.isRunning() && thumbnailControl)
+            thumbnailProgress->setValue(thumbnailControl->progress.load());
+    });
+    progressTimer.start();
+    connect(&thumbnailWatcher, &QFutureWatcher<QVector<QPair<QString, QImage>>>::finished, this, [this] {
+        for (const auto &entry : thumbnailWatcher.result())
+            thumbnails.insert(entry.first, entry.second);
+        QStringList failed;
+        for (int i = 0; i < photos->count(); ++i) {
+            auto item = photos->item(i);
+            const QString path = itemPhoto(item).path;
+            if (thumbnails.contains(path)) {
+                const auto img = thumbnails.value(path);
+                item->setIcon(QPixmap::fromImage(img));
+                if (img.isNull()) {
+                    item->setToolTip("无法解码照片：" + path);
+                    failed << QFileInfo(path).fileName();
+                }
+            }
+        }
+        thumbnailProgress->hide();
+        if (!failed.isEmpty())
+            statusBar()->showMessage("缩略图读取失败：" + failed.join("、"));
+        startThumbnails();
+    });
     debounce.setSingleShot(true);
     debounce.setInterval(160);
     connect(&debounce, &QTimer::timeout, this, &Window::startPreview);
@@ -136,6 +192,7 @@ Window::Window() {
             debounce.start(0);
             return;
         }
+        previewProgress->hide();
         auto result = previewWatcher.result();
         if (result.canceled)
             return;
@@ -147,6 +204,29 @@ Window::Window() {
         }
         preview->setImage(result.image, doc);
         preview->selectPhoto(photos->currentRow());
+        const auto base = baseSheetSize(doc);
+        QRectF target;
+        if (pendingFocus >= 1 && pendingFocus <= 6 && doc.options.header)
+            target = headerBlockRect(doc.options, base.width(), pendingFocus - 1);
+        else if (pendingFocus == 7 && photos->currentRow() >= 0)
+            target = photoRect(doc, photos->currentRow());
+        else if (pendingFocus == 8 && doc.options.header)
+            target = {0, 0, double(base.width()), double(doc.options.headerHeight)};
+        else if (pendingFocus == 9)
+            target = {0, double(doc.options.header ? doc.options.headerHeight + doc.options.headerGap : 0),
+                      double(base.width()), 700};
+        else if (pendingFocus == 10 && doc.options.header)
+            target = overlayRect(doc.options.logo,
+                                 {20, 20, double(base.width() - 40), double(doc.options.headerHeight - 40)}, true);
+        else if (pendingFocus == 11)
+            target = overlayRect(doc.options.watermark, {20, 20, double(base.width() - 40), double(base.height() - 40)},
+                                 false);
+        else if (pendingFocus == 12 && doc.options.header)
+            target = {0, double(doc.options.headerHeight), double(base.width()),
+                      double(qMax(1, doc.options.headerGap))};
+        if (!target.isEmpty())
+            preview->focusRegion(target, base.width());
+        pendingFocus = 0;
         const auto size = outputSize(doc);
         previewInfo->setText(QString("实时预览  ·  导出 %1 × %2 px  ·  %3 张照片")
                                  .arg(size.width())
@@ -157,6 +237,10 @@ Window::Window() {
             smokeExported = true;
             QTimer::singleShot(300, this, [this] {
                 grab().save(smokeDir + "/界面预览.png");
+                if (auto tabs = findChild<QTabWidget *>()) {
+                    tabs->setCurrentIndex(1);
+                    grab().save(smokeDir + "/文字设置.png");
+                }
                 exportImage(smokeDir + "/示例索引图.jpg");
             });
         }
@@ -170,6 +254,9 @@ Window::~Window() {
         previewControl->canceled.store(true);
     if (exportControl)
         exportControl->canceled.store(true);
+    if (thumbnailControl)
+        thumbnailControl->canceled.store(true);
+    thumbnailWatcher.waitForFinished();
     previewWatcher.waitForFinished();
     exportWatcher.waitForFinished();
 }
@@ -208,20 +295,8 @@ void Window::buildUi() {
         if (!dir.isEmpty())
             addFiles({dir});
     });
-    button(bar, "打开项目", [this] { openProject(); });
-    button(bar, "保存项目", [this] { saveProject(); });
-    button(bar, "新建", [this] {
-        if (confirmDiscard()) {
-            doc = {};
-            projectPath.clear();
-            rebuildPhotos();
-            syncControls();
-            dirty = false;
-            changed();
-            dirty = false;
-            updateTitle();
-        }
-    });
+    button(bar, "打开预设", [this] { openProject(); }, "openPreset");
+    button(bar, "保存预设", [this] { saveProject(true); }, "savePreset");
     bar->addStretch();
     button(bar, "导出索引图", [this] { exportImage(); }, "exportButton");
     outer->addLayout(bar);
@@ -238,6 +313,11 @@ void Window::buildUi() {
     ll->addWidget(hint);
     photos = new PhotoList;
     ll->addWidget(photos);
+    thumbnailProgress = new QProgressBar;
+    thumbnailProgress->setObjectName("thumbnailProgress");
+    thumbnailProgress->setFormat("生成缩略图 %v / %m");
+    thumbnailProgress->hide();
+    ll->addWidget(thumbnailProgress);
     auto row = new QHBoxLayout;
     button(row, "↑", [this] {
         int i = photos->currentRow();
@@ -295,14 +375,19 @@ void Window::buildUi() {
     cl->addLayout(viewBar);
     preview = new Preview;
     cl->addWidget(preview);
+    previewProgress = new QProgressBar;
+    previewProgress->setObjectName("previewProgress");
+    previewProgress->setFormat("正在渲染预览 %v / %m");
+    previewProgress->hide();
+    cl->addWidget(previewProgress);
     auto help = new QLabel("点击预览中的照片进行调整  ·  Ctrl + 滚轮缩放  ·  拖动平移");
     help->setObjectName("muted");
     help->setAlignment(Qt::AlignCenter);
     cl->addWidget(help);
     split->addWidget(center);
     auto tabs = new QTabWidget;
-    tabs->setMinimumWidth(300);
-    tabs->setMaximumWidth(390);
+    tabs->setMinimumWidth(360);
+    tabs->setMaximumWidth(460);
     auto formTab = [&](QString title) {
         auto scroll = new QScrollArea;
         scroll->setWidgetResizable(true);
@@ -319,123 +404,370 @@ void Window::buildUi() {
     auto layout = formTab("排版");
     auto text = formTab("文字");
     auto photo = formTab("照片");
+    photo->setProperty("focusRegion", 7);
+    auto tag = [](QWidget *w, QFormLayout *f) { w->setProperty("focusRegion", f->property("focusRegion")); };
+    auto section = [&](QFormLayout *parent, const QString &title, int focus, bool expanded = false) {
+        auto container = new QWidget;
+        auto box = new QVBoxLayout(container);
+        box->setContentsMargins(0, 0, 0, 0);
+        auto toggle = new QToolButton;
+        toggle->setText(title);
+        toggle->setCheckable(true);
+        toggle->setChecked(expanded);
+        toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        auto body = new QWidget;
+        auto f = new QFormLayout(body);
+        f->setContentsMargins(3, 8, 3, 8);
+        f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        f->setVerticalSpacing(10);
+        f->setProperty("focusRegion", focus);
+        body->setVisible(expanded);
+        box->addWidget(toggle);
+        box->addWidget(body);
+        parent->addRow(container);
+        connect(toggle, &QToolButton::toggled, this, [body, toggle](bool on) {
+            body->setVisible(on);
+            toggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        });
+        return f;
+    };
+    auto tip = [](QFormLayout *f, const QString &message) {
+        auto l = new QLabel(message);
+        l->setWordWrap(true);
+        l->setObjectName("muted");
+        f->addRow(l);
+    };
     auto spin = [&](QFormLayout *f, QString label, int *value, int min, int max, const QString &name = QString()) {
         auto w = new QSpinBox;
         w->setRange(min, max);
         w->setObjectName(name);
+        tag(w, f);
         f->addRow(label, w);
         bindings << [w, value] {
-            QSignalBlocker block(w);
+            QSignalBlocker b(w);
             w->setValue(*value);
         };
         connect(w, &QSpinBox::valueChanged, this, [this, value](int v) {
             *value = v;
             changed();
         });
+        return w;
     };
     auto check = [&](QFormLayout *f, QString label, bool *value) {
         auto w = new QCheckBox(label);
+        tag(w, f);
         f->addRow(w);
         bindings << [w, value] {
-            QSignalBlocker block(w);
+            QSignalBlocker b(w);
             w->setChecked(*value);
         };
         connect(w, &QCheckBox::toggled, this, [this, value](bool v) {
             *value = v;
             changed();
         });
+        return w;
     };
     auto line = [&](QFormLayout *f, QString label, QString *value, const QString &name = QString()) {
         auto w = new QLineEdit;
         w->setMaxLength(250);
         w->setClearButtonEnabled(true);
         w->setObjectName(name);
+        tag(w, f);
         f->addRow(label, w);
         bindings << [w, value] {
-            QSignalBlocker block(w);
+            QSignalBlocker b(w);
             w->setText(*value);
         };
         connect(w, &QLineEdit::textChanged, this, [this, value](const QString &v) {
             *value = v;
             changed();
         });
+        return w;
     };
     auto color = [&](QFormLayout *f, QString label, QColor *value) {
         auto w = new QPushButton;
+        tag(w, f);
+        w->setObjectName("colorButton");
+        w->setIconSize({24, 18});
+        w->setStyleSheet("text-align:left;");
         f->addRow(label, w);
         auto refresh = [w, value] {
+            QPixmap swatch(48, 36);
+            swatch.fill(*value);
+            swatch.setDevicePixelRatio(2);
+            w->setIcon(QIcon(swatch));
             w->setText(value->name().toUpper());
-            w->setStyleSheet(QString("QPushButton{border-left:14px solid %1;text-align:left;padding-left:12px;}")
-                                 .arg(value->name()));
         };
         bindings << refresh;
         connect(w, &QPushButton::clicked, this, [this, value, refresh] {
-            auto c = QColorDialog::getColor(*value, this, "选择颜色");
-            if (c.isValid()) {
-                *value = c;
+            QColorDialog dialog(*value, this);
+            dialog.setWindowTitle("选择颜色");
+            dialog.setOption(QColorDialog::DontUseNativeDialog);
+            if (dialog.exec() == QDialog::Accepted) {
+                *value = dialog.selectedColor();
                 refresh();
                 changed();
             }
         });
+        return w;
+    };
+    auto imagePicker = [&](QFormLayout *f, QString *path, const QString &label) {
+        auto w = new QWidget;
+        auto row = new QHBoxLayout(w);
+        row->setContentsMargins(0, 0, 0, 0);
+        auto pick = new QPushButton("选择图片…"), clear = new QPushButton("清除");
+        tag(pick, f);
+        tag(clear, f);
+        row->addWidget(pick, 1);
+        row->addWidget(clear);
+        f->addRow(label, w);
+        auto refresh = [pick, path] {
+            pick->setText(path->isEmpty() ? "选择图片…" : QFileInfo(*path).fileName());
+            pick->setToolTip(*path);
+        };
+        bindings << refresh;
+        connect(pick, &QPushButton::clicked, this, [this, path, refresh] {
+            QString file = QFileDialog::getOpenFileName(this, "选择图片", {},
+                                                        "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.svg)");
+            if (file.isEmpty())
+                return;
+            QImageReader reader(file);
+            if (!reader.canRead()) {
+                report("无法读取该图片。");
+                return;
+            }
+            *path = file;
+            refresh();
+            changed();
+        });
+        connect(clear, &QPushButton::clicked, this, [this, path, refresh] {
+            path->clear();
+            refresh();
+            changed();
+        });
+    };
+    auto fontControl = [&](QFormLayout *f, TextStyle *style) {
+        auto family = new QFontComboBox;
+        family->setMinimumWidth(90);
+        tag(family, f);
+        f->addRow("字体", family);
+        bindings << [family, style] {
+            QSignalBlocker b(family);
+            family->setCurrentFont(QFont(style->family));
+        };
+        connect(family, &QFontComboBox::currentFontChanged, this, [this, style](const QFont &font) {
+            style->family = font.family();
+            style->fontFile = importedFontFile(font.family());
+            changed();
+        });
+        auto load = new QPushButton("导入字体文件…");
+        tag(load, f);
+        f->addRow(load);
+        connect(load, &QPushButton::clicked, this, [this, style, family] {
+            QString file = QFileDialog::getOpenFileName(this, "导入字体", {}, "字体 (*.ttf *.otf *.ttc)");
+            if (file.isEmpty())
+                return;
+            QString error;
+            if (!importFont(style, file, &error)) {
+                report(error);
+                return;
+            }
+            QSignalBlocker b(family);
+            family->setCurrentFont(QFont(style->family));
+            changed();
+        });
+        color(f, "文本颜色", &style->color);
     };
     auto &o = doc.options;
     auto templates = new QComboBox;
     templates->setObjectName("templateCombo");
-    templates->addItems(templateNames());
+    templates->setMinimumWidth(90);
+    templates->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    templates->setProperty("focusRegion", 9);
     layout->addRow("胶片模板", templates);
-    bindings << [this, templates] {
+    auto refreshTemplates = [this, templates] {
         QSignalBlocker b(templates);
+        templates->clear();
+        templates->addItems(templateNames());
+        if (templates->findText(doc.options.filmTemplate) < 0)
+            templates->addItem(doc.options.filmTemplate);
         templates->setCurrentText(doc.options.filmTemplate);
     };
-    connect(templates, &QComboBox::currentTextChanged, this, [this](const QString &s) {
-        doc.options.filmTemplate = s;
-        changed();
+    bindings << refreshTemplates;
+    connect(templates, &QComboBox::currentTextChanged, this, [this](const QString &name) {
+        doc.options.filmTemplate = name;
+        doc.options.templatePath.clear();
+        changed(9);
     });
-    check(layout, "显示标题栏", &o.header);
-    check(layout, "显示右侧胶卷信息", &o.details);
-    spin(layout, "标题栏高度", &o.headerHeight, 180, 1000, "headerHeight");
+    auto templateActions = new QHBoxLayout;
+    button(templateActions, "导入模板", [this, refreshTemplates] {
+        QString dir = QFileDialog::getExistingDirectory(this, "选择胶片模板文件夹");
+        if (dir.isEmpty())
+            return;
+        QString name, error;
+        if (!importTemplate(dir, &name, &error)) {
+            report(error);
+            return;
+        }
+        doc.options.filmTemplate = name;
+        doc.options.templatePath.clear();
+        refreshTemplates();
+        changed(9);
+    });
+    button(templateActions, "刷新", [refreshTemplates] { refreshTemplates(); });
+    button(templateActions, "模板目录", [this] {
+        if (!QDir().mkpath(templatesDirectory())) {
+            report("无法创建模板目录。");
+            return;
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(templatesDirectory()));
+    });
+    layout->addRow(templateActions);
+    check(layout, "显示标题栏", &o.header)->setProperty("focusRegion", 8);
+    check(layout, "显示右侧胶卷信息", &o.details)->setProperty("focusRegion", 3);
+    spin(layout, "标题栏高度", &o.headerHeight, 180, 1000, "headerHeight")->setProperty("focusRegion", 8);
+    spin(layout, "标题栏与索引间距", &o.headerGap, 0, 500, "headerGap")->setProperty("focusRegion", 12);
     spin(layout, "外边框", &o.border, 0, 200, "borderSize");
-    spin(layout, "胶片条间距", &o.gap, 0, 200, "stripGap");
-    color(layout, "外边框颜色", &o.background);
-    color(layout, "标题栏颜色", &o.headerColor);
-    color(layout, "文字颜色", &o.textColor);
-    auto outputLabel = new QLabel("导出设置");
-    outputLabel->setObjectName("sectionTitle");
-    layout->addRow(outputLabel);
-    spin(layout, "输出宽度 px", &o.outputWidth, 600, 9000, "outputWidth");
-    spin(layout, "JPEG 质量", &o.quality, 1, 100);
-    auto tip = new QLabel("高度随排版自动计算。预览采用轻量分辨率，导出使用上述尺寸。单张最多 42 张照片。");
-    tip->setWordWrap(true);
-    tip->setObjectName("muted");
-    layout->addRow(tip);
-    line(text, "主标题", &o.brand, "mainTitle");
-    auto alignment = new QComboBox;
-    alignment->setObjectName("headerAlignment");
-    alignment->addItems({"左对齐", "水平居中", "右对齐"});
-    text->addRow("左侧顶部文字对齐", alignment);
-    bindings << [this, alignment] {
-        QSignalBlocker blocker(alignment);
-        alignment->setCurrentIndex(doc.options.headerAlignment);
+    spin(layout, "胶片条间距", &o.gap, 0, 200, "stripGap")->setProperty("focusRegion", 9);
+    color(layout, "索引背景颜色", &o.background)->setProperty("focusRegion", 9);
+    color(layout, "标题栏颜色", &o.headerColor)->setProperty("focusRegion", 8);
+    auto backgroundControls = [&](QFormLayout *f, ImageLayer *v) {
+        imagePicker(f, &v->path, "背景图片");
+        spin(f, "不透明度 %", &v->opacity, 0, 100);
+        spin(f, "裁切焦点 · 横 %", &v->cropX, 0, 100);
+        spin(f, "裁切焦点 · 纵 %", &v->cropY, 0, 100);
+        tip(f, "自动等比填满区域并裁切；0% 不透明度完全透明，100% 完全显示。裁切焦点控制保留位置。");
     };
-    connect(alignment, &QComboBox::currentIndexChanged, this, [this](int index) {
-        doc.options.headerAlignment = index;
-        changed();
+    backgroundControls(section(layout, "标题栏图片背景", 8), &o.headerImage);
+    backgroundControls(section(layout, "索引区域图片背景", 9), &o.indexImage);
+    auto overlayControls = [&](QFormLayout *f, Overlay *v, bool isLogo) {
+        check(f, isLogo ? "显示 Logo" : "显示水印", &v->enabled)->setObjectName(isLogo ? "showLogo" : "showWatermark");
+        if (!isLogo) {
+            auto mode = new QComboBox;
+            mode->addItems({"文字", "图片"});
+            tag(mode, f);
+            f->addRow("水印类型", mode);
+            bindings << [mode, v] {
+                QSignalBlocker b(mode);
+                mode->setCurrentIndex(v->type);
+            };
+            connect(mode, &QComboBox::currentIndexChanged, this, [this, v](int i) {
+                v->type = i;
+                changed(11);
+            });
+            line(f, "水印文本", &v->text, "watermarkText");
+            fontControl(f, &v->style);
+        }
+        imagePicker(f, &v->path, isLogo ? "自定义 Logo" : "水印图片");
+        spin(f, "位置 · 横 %", &v->x, 0, 100);
+        spin(f, "位置 · 纵 %", &v->y, 0, 100);
+        spin(f, isLogo ? "Logo 尺寸" : "字号 / 图片尺寸", &v->size, 16, 2000);
+        spin(f, "不透明度 %", &v->opacity, 0, 100);
+        tip(f, isLogo ? "Logo 显示在标题栏；未选图片时使用内置 Logo。坐标按可移动空间计算，0% 靠左/上，100% 靠右/下。"
+                      : "水印位于整张索引图最上层；图片保持比例，位置以可移动空间百分比表示。");
+    };
+    overlayControls(section(layout, "Logo", 10, true), &o.logo, true);
+    overlayControls(section(layout, "自定义水印", 11), &o.watermark, false);
+    auto output = section(layout, "预览与输出", 0, true);
+    spin(output, "预览宽度 px", &o.previewWidth, 600, 4572, "previewWidth");
+    auto unit = new QComboBox;
+    unit->addItems({"px（像素）", "毫米 mm", "厘米 cm", "英寸 in"});
+    unit->setObjectName("outputUnit");
+    output->addRow("输出单位", unit);
+    auto width = new QDoubleSpinBox;
+    width->setObjectName("outputWidth");
+    width->setKeyboardTracking(false);
+    output->addRow("输出宽度", width);
+    auto dpi = new QSpinBox;
+    dpi->setRange(72, 1200);
+    dpi->setObjectName("outputDpi");
+    output->addRow("输出 DPI", dpi);
+    auto updateWidth = [this, width, unit, dpi] {
+        QSignalBlocker bw(width), bu(unit), bd(dpi);
+        const auto &v = doc.options;
+        unit->setCurrentIndex(v.outputUnit);
+        dpi->setValue(v.dpi);
+        width->setDecimals(v.outputUnit == 0 ? 0 : 3);
+        width->setRange(widthInUnit(600, v.outputUnit, v.dpi), widthInUnit(9000, v.outputUnit, v.dpi));
+        width->setValue(widthInUnit(v.outputWidth, v.outputUnit, v.dpi));
+    };
+    bindings << updateWidth;
+    connect(unit, &QComboBox::currentIndexChanged, this, [this, updateWidth](int i) {
+        doc.options.outputUnit = i;
+        updateWidth();
+        changed(0);
     });
-    line(text, "左侧备注", &o.note);
-    line(text, "胶卷标题", &o.title, "titleText");
-    line(text, "胶片型号", &o.film);
-    line(text, "ISO", &o.iso);
-    line(text, "拍摄地点", &o.location);
-    line(text, "拍摄日期", &o.date);
-    line(text, "相机", &o.camera);
-    line(text, "镜头", &o.lens);
-    spin(text, "主标题字号", &o.brandSize, 20, 180);
-    spin(text, "标题字号", &o.titleSize, 20, 120);
-    spin(text, "信息字号", &o.infoSize, 16, 80);
-    auto textTip = new QLabel("文字过长时自动省略；标题栏较矮时自动缩小文字。字号、间距以模板原始像素为单位。");
-    textTip->setWordWrap(true);
-    textTip->setObjectName("muted");
-    text->addRow(textTip);
+    connect(width, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        doc.options.outputWidth = qBound(600, widthInPixels(v, doc.options.outputUnit, doc.options.dpi), 9000);
+        changed(0);
+    });
+    connect(dpi, &QSpinBox::valueChanged, this, [this, width, updateWidth](int v) {
+        auto &o = doc.options;
+        double physical = width->value();
+        o.dpi = v;
+        if (o.outputUnit)
+            o.outputWidth = qBound(600, widthInPixels(physical, o.outputUnit, o.dpi), 9000);
+        updateWidth();
+        changed(0);
+    });
+    spin(output, "JPEG 质量", &o.quality, 1, 100);
+    tip(output, "预览分辨率与导出独立。像素宽度限定 600–9000；实物单位根据 DPI 换算。高度随排版计算。");
+    auto alignControls = [&](bool right) {
+        auto f = section(text, right ? "右侧顶部文字位置" : "左侧顶部文字位置", right ? 3 : 1);
+        auto mode = new QComboBox;
+        mode->setObjectName(right ? "rightAlignment" : "headerAlignment");
+        mode->addItems({"左对齐", "水平居中", "右对齐", "自定义位置"});
+        tag(mode, f);
+        f->addRow("对齐方式", mode);
+        int *value = right ? &o.rightAlignment : &o.headerAlignment;
+        auto x = spin(f, "自定义横向 px", right ? &o.rightX : &o.leftX, 0, 4502, right ? "rightX" : "leftX");
+        auto y = spin(f, "自定义纵向 px", right ? &o.rightY : &o.leftY, 0, 1000, right ? "rightY" : "leftY");
+        bindings << [mode, value, x, y] {
+            QSignalBlocker b(mode);
+            mode->setCurrentIndex(*value);
+            x->setEnabled(*value == 3);
+            y->setEnabled(*value == 3);
+        };
+        connect(mode, &QComboBox::currentIndexChanged, this, [this, value, x, y](int v) {
+            *value = v;
+            x->setEnabled(v == 3);
+            y->setEnabled(v == 3);
+            changed();
+        });
+    };
+    alignControls(false);
+    alignControls(true);
+    tip(text, "自定义坐标以各栏左上角为原点、按模板原始像素调整，越界自动限制在栏内；普通对齐时忽略自定义坐标。长文本自"
+              "动省略。");
+    auto main = section(text, "主标题", 1, true);
+    line(main, "主标题", &o.brand, "mainTitle");
+    spin(main, "主标题字号", &o.brandSize, 20, 180);
+    fontControl(main, &o.textStyles[0]);
+    auto note = section(text, "左侧备注", 2);
+    line(note, "左侧备注", &o.note);
+    fontControl(note, &o.textStyles[1]);
+    auto title = section(text, "胶卷标题", 3, true);
+    line(title, "胶卷标题", &o.title, "titleText");
+    spin(title, "标题字号", &o.titleSize, 20, 120);
+    fontControl(title, &o.textStyles[2]);
+    auto film = section(text, "胶片 / ISO", 4);
+    line(film, "胶片型号", &o.film);
+    line(film, "ISO", &o.iso);
+    fontControl(film, &o.textStyles[3]);
+    auto place = section(text, "地点 / 日期", 5);
+    line(place, "拍摄地点", &o.location);
+    line(place, "拍摄日期", &o.date);
+    fontControl(place, &o.textStyles[4]);
+    auto camera = section(text, "相机 / 镜头", 6);
+    line(camera, "相机", &o.camera);
+    line(camera, "镜头", &o.lens);
+    fontControl(camera, &o.textStyles[5]);
+    spin(text, "信息字号", &o.infoSize, 16, 80, "infoSize")->setProperty("focusRegion", 4);
+    tip(text,
+        "字号和间距按模板原始像素计算。信息字号用于备注及胶卷详情；标题栏较矮时自动缩小文字。字体文件随预设保存。");
+
     check(photo, "竖幅照片自动顺时针转横", &o.autoRotate);
     check(photo, "完整显示照片（留边）", &o.fit);
     color(photo, "照片留边颜色", &o.matColor);
@@ -463,7 +795,7 @@ void Window::buildUi() {
         p.cropY = cropY->value() / 100.0;
         item->setData(Qt::UserRole, QVariant::fromValue(p));
         collectPhotos();
-        changed();
+        changed(7);
     };
     connect(cropX, &QSlider::valueChanged, this, cropChanged);
     connect(cropY, &QSlider::valueChanged, this, cropChanged);
@@ -511,7 +843,7 @@ void Window::buildUi() {
         QLabel#sectionTitle,QLabel#previewInfo{font-weight:600;font-size:13px;} QPushButton{background:#303b43;border:1px solid #43515a;border-radius:5px;padding:7px 10px;}
         QPushButton:hover{background:#40505a;} QPushButton:pressed{background:#1b5350;} QPushButton:disabled{color:#71818b;}
         QPushButton#exportButton{background:#80dfba;color:#102b22;font-weight:700;border:0;padding:9px 25px;}
-        QPushButton#exportButton:hover{background:#a0efd0;} QLineEdit,QSpinBox,QComboBox{background:#192126;border:1px solid #45545d;border-radius:4px;padding:6px;selection-background-color:#327f6b;}
+        QPushButton#exportButton:hover{background:#a0efd0;} QLineEdit,QSpinBox,QDoubleSpinBox,QComboBox{background:#192126;border:1px solid #45545d;border-radius:4px;padding:6px;selection-background-color:#327f6b;}
         QLineEdit:focus,QSpinBox:focus,QComboBox:focus{border:1px solid #80dfba;}
         QListWidget{background:#1b2227;border:1px solid #34424b;border-radius:6px;outline:0;}
         QListWidget::item{padding:5px;border-radius:4px;} QListWidget::item:selected{background:#32564f;color:#edfff8;}
@@ -521,6 +853,10 @@ void Window::buildUi() {
         QSlider::groove:horizontal{background:#45545d;height:4px;border-radius:2px;} QSlider::handle:horizontal{background:#80dfba;width:14px;margin:-5px 0;border-radius:7px;}
         QScrollBar:vertical{background:#22292e;width:10px;} QScrollBar::handle:vertical{background:#53636e;min-height:20px;border-radius:4px;}
         QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QStatusBar{color:#a8b9c2;}
+        QGroupBox{border:1px solid #43515a;border-radius:5px;margin-top:12px;padding-top:12px;}
+        QGroupBox::title{subcontrol-origin:margin;left:8px;color:#9aeacb;}
+        QProgressBar{border:1px solid #43515a;border-radius:3px;text-align:center;min-height:16px;}
+        QProgressBar::chunk{background:#327f6b;}
         QToolTip{background:#eff6f3;color:#172b23;border:1px solid #80dfba;padding:6px;}
     )");
 }
@@ -531,7 +867,12 @@ void Window::syncControls() {
     syncing = false;
     selectPhoto();
 }
-void Window::changed() {
+void Window::changed(int focus) {
+    if (focus < 0) {
+        auto object = sender();
+        focus = object ? object->property("focusRegion").toInt() : 0;
+    }
+    pendingFocus = focus;
     if (syncing)
         return;
     dirty = true;
@@ -541,6 +882,7 @@ void Window::changed() {
     if (previewControl)
         previewControl->canceled.store(true);
     if (doc.photos.isEmpty()) {
+        previewProgress->hide();
         preview->clearImage();
         previewInfo->setText("添加照片以显示实时预览");
     } else
@@ -552,7 +894,7 @@ void Window::changed() {
 void Window::updateTitle() {
     setWindowTitle(
         QString("%1%2 — Film Index Studio")
-            .arg(projectPath.isEmpty() ? "未命名索引图" : QFileInfo(projectPath).fileName(), dirty ? " *" : ""));
+            .arg(projectPath.isEmpty() ? "当前索引图" : QFileInfo(projectPath).fileName(), dirty ? " *" : ""));
 }
 void Window::startPreview() {
     if (previewWatcher.isRunning() || doc.photos.isEmpty())
@@ -561,7 +903,8 @@ void Window::startPreview() {
     previewControl = std::make_shared<RenderControl>();
     Document snapshot = doc;
     auto control = previewControl;
-    previewWatcher.setFuture(QtConcurrent::run([snapshot, control] { return renderSheet(snapshot, 1600, control); }));
+    previewWatcher.setFuture(QtConcurrent::run(
+        [snapshot, control] { return renderSheet(snapshot, snapshot.options.previewWidth, control); }));
 }
 void Window::collectPhotos() {
     doc.photos.clear();
@@ -579,7 +922,7 @@ void Window::rebuildPhotos() {
     for (int i = 0; i < doc.photos.size(); ++i) {
         const auto &p = doc.photos[i];
         auto item =
-            new QListWidgetItem(QIcon(QPixmap::fromImage(thumbnail(p.path))),
+            new QListWidgetItem(QIcon(QPixmap::fromImage(thumbnails.value(p.path))),
                                 QString("%1   %2").arg(i + 1, 2, 10, QChar('0')).arg(QFileInfo(p.path).fileName()));
         item->setData(Qt::UserRole, QVariant::fromValue(p));
         item->setToolTip(p.path);
@@ -590,6 +933,33 @@ void Window::rebuildPhotos() {
     if (photos->count())
         photos->setCurrentRow(0);
     selectPhoto();
+    startThumbnails();
+}
+void Window::startThumbnails() {
+    if (thumbnailWatcher.isRunning())
+        return;
+    QStringList paths;
+    for (const auto &p : doc.photos)
+        if (!thumbnails.contains(p.path))
+            paths << p.path;
+    paths.removeDuplicates();
+    if (paths.isEmpty())
+        return;
+    thumbnailControl = std::make_shared<RenderControl>();
+    auto control = thumbnailControl;
+    thumbnailProgress->setRange(0, paths.size());
+    thumbnailProgress->setValue(0);
+    thumbnailProgress->show();
+    thumbnailWatcher.setFuture(QtConcurrent::run([paths, control] {
+        QVector<QPair<QString, QImage>> results;
+        for (const auto &path : paths) {
+            if (control->canceled.load())
+                break;
+            results.append({path, thumbnail(path)});
+            control->progress.fetch_add(1);
+        }
+        return results;
+    }));
 }
 void Window::addFiles(QStringList paths) {
     if (exporting || paths.isEmpty())
@@ -676,7 +1046,7 @@ void Window::changeSelected(int degrees, bool reset) {
         item->setData(Qt::UserRole, QVariant::fromValue(p));
     }
     collectPhotos();
-    changed();
+    changed(7);
 }
 void Window::report(const QString &message) {
     statusBar()->showMessage(message);
@@ -684,53 +1054,63 @@ void Window::report(const QString &message) {
         QMessageBox::warning(this, "Film Index Studio", message);
 }
 bool Window::confirmDiscard() {
-    if (!dirty)
-        return true;
-    auto answer =
-        QMessageBox::question(this, "保存当前项目？", "当前照片排列和参数尚未保存。",
-                              QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-    return answer == QMessageBox::Discard || (answer == QMessageBox::Save && saveProject());
+    return true;
 }
-bool Window::saveProject(bool saveAs) {
-    QString path = projectPath;
-    if (path.isEmpty() || saveAs)
-        path = QFileDialog::getSaveFileName(this, "保存项目", path, "Film Index Studio 项目 (*.findex)");
-    if (path.isEmpty())
+bool Window::saveProject(bool) {
+    const QString folder = QCoreApplication::applicationDirPath() + "/presets";
+    if (!QDir().mkpath(folder)) {
+        report("无法写入软件目录，请移动软件到可写目录。");
         return false;
-    if (!path.endsWith(".findex", Qt::CaseInsensitive))
-        path += ".findex";
+    }
+    bool ok = false;
+    QString name =
+        QInputDialog::getText(this, "保存预设", "预设名称", QLineEdit::Normal,
+                              projectPath.isEmpty() ? "我的预设" : QFileInfo(projectPath).completeBaseName(), &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+        return false;
+    if (name.contains(QRegularExpression("[<>:\"/\\\\|?*]")) || name.endsWith('.') || name == "..") {
+        report("名称不能包含路径或文件名特殊字符。");
+        return false;
+    }
+    const QString path = folder + '/' + name + ".fipreset";
+    if (QFileInfo::exists(path) &&
+        QMessageBox::question(this, "覆盖预设？", "同名预设已存在，是否替换？", QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return false;
     QString error;
-    if (!saveDocument(doc, path, &error)) {
+    if (!savePreset(doc.options, path, &error)) {
         report(error);
         return false;
     }
     projectPath = path;
     dirty = false;
     updateTitle();
-    statusBar()->showMessage("项目已保存 · 项目引用原图路径，不复制原图。");
+    statusBar()->showMessage("预设已保存到软件目录，包含全部设置及引用素材，不包含照片列表。");
     return true;
 }
 void Window::openProject(const QString &given) {
-    if (exporting || !confirmDiscard())
+    if (exporting)
         return;
-    QString path = given.isEmpty()
-                       ? QFileDialog::getOpenFileName(this, "打开项目", {}, "Film Index Studio 项目 (*.findex)")
-                       : given;
+    QString path = given.isEmpty() ? QFileDialog::getOpenFileName(this, "打开预设",
+                                                                  QCoreApplication::applicationDirPath() + "/presets",
+                                                                  "Film Index 预设 (*.fipreset)")
+                                   : given;
     if (path.isEmpty())
         return;
-    Document next;
+    Options next;
     QString error;
-    if (!loadDocument(path, &next, &error)) {
+    if (!loadPreset(path, &next, &error)) {
         report(error);
         return;
     }
-    doc = next;
+    doc.options = next;
     projectPath = path;
-    rebuildPhotos();
     syncControls();
-    changed();
+    changed(0);
     dirty = false;
     updateTitle();
+    statusBar()->showMessage("预设已应用，当前照片及照片调整保持不变。");
 }
 void Window::exportImage(const QString &given) {
     if (exporting)
@@ -756,14 +1136,23 @@ void Window::exportImage(const QString &given) {
             path += filter.startsWith("PNG") ? ".png" : ".jpg";
     }
     QString target = QFileInfo(path).absoluteFilePath();
+    QStringList sources{doc.options.headerImage.path, doc.options.indexImage.path, doc.options.logo.path,
+                        doc.options.watermark.path};
+    for (int row = 0; row < 7; ++row)
+        sources << templateFile(doc.options, row);
     for (const auto &p : doc.photos)
-        if (QFileInfo(p.path).absoluteFilePath().compare(target, Qt::CaseInsensitive) == 0 ||
+        sources << p.path;
+    for (const auto &source : sources) {
+        if (source.isEmpty() || source.startsWith(":/"))
+            continue;
+        if (QFileInfo(source).absoluteFilePath().compare(target, Qt::CaseInsensitive) == 0 ||
             (!QFileInfo(path).canonicalFilePath().isEmpty() &&
-             QFileInfo(p.path).canonicalFilePath().compare(QFileInfo(path).canonicalFilePath(), Qt::CaseInsensitive) ==
+             QFileInfo(source).canonicalFilePath().compare(QFileInfo(path).canonicalFilePath(), Qt::CaseInsensitive) ==
                  0)) {
-            report("导出路径与原照片相同，请选择其他文件名。");
+            report("导出路径与原照片或正在使用的素材相同，请选择其他文件名。");
             return;
         }
+    }
     exporting = true;
     lastExport = path;
     exportControl = std::make_shared<RenderControl>();
@@ -841,7 +1230,7 @@ void Window::dragEnterEvent(QDragEnterEvent *e) {
 }
 void Window::dropEvent(QDropEvent *e) {
     auto paths = urlPaths(e->mimeData());
-    if (paths.size() == 1 && paths[0].endsWith(".findex", Qt::CaseInsensitive))
+    if (paths.size() == 1 && paths[0].endsWith(".fipreset", Qt::CaseInsensitive))
         openProject(paths[0]);
     else
         addFiles(paths);
@@ -851,7 +1240,7 @@ void Window::startSmokeTest(const QString &directory) {
     smokeDir = QFileInfo(directory).absoluteFilePath();
     QDir().mkpath(smokeDir + "/samples");
     doc.options.title = "城市漫游 · 秋日光影";
-    doc.options.brand = "Film Index Studio";
+    doc.options.brand = "Film Index";
     doc.options.headerAlignment = 1;
     doc.options.note = "2026 / CONTACT SHEET";
     doc.options.film = "KODAK GOLD 200";
@@ -861,6 +1250,27 @@ void Window::startSmokeTest(const QString &directory) {
     doc.options.camera = "Nikon F3";
     doc.options.lens = "50mm f/1.4";
     doc.options.filmTemplate = "kodak-gc-400";
+    doc.options.rightAlignment = 2;
+    doc.options.logo.enabled = true;
+    doc.options.logo.size = 240;
+    doc.options.watermark.enabled = true;
+    doc.options.watermark.text = "FILM INDEX / 2026";
+    doc.options.watermark.x = 95;
+    doc.options.watermark.y = 98;
+    doc.options.watermark.style.color = QColor("#ffffff");
+    doc.options.textStyles[1].color = QColor("#80dfba");
+    QImage backdrop(1200, 800, QImage::Format_RGB32);
+    {
+        QPainter p(&backdrop);
+        QLinearGradient gradient(0, 0, 1200, 800);
+        gradient.setColorAt(0, QColor("#1f685d"));
+        gradient.setColorAt(1, QColor("#c1935e"));
+        p.fillRect(backdrop.rect(), gradient);
+    }
+    const QString backgroundPath = smokeDir + "/background.png";
+    backdrop.save(backgroundPath);
+    doc.options.headerImage = {backgroundPath, 25, 50, 50};
+    doc.options.indexImage = {backgroundPath, 12, 50, 50};
     for (int i = 0; i < 18; ++i) {
         QImage img(900, 600, QImage::Format_RGB32);
         QPainter p(&img);
@@ -896,7 +1306,15 @@ void Window::startSmokeTest(const QString &directory) {
     changeSelected(180);
     cropX->setValue(20);
     QString error;
-    saveDocument(doc, smokeDir + "/示例项目.findex", &error);
+    Options restored;
+    if (!savePreset(doc.options, smokeDir + "/示例预设.fipreset", &error) ||
+        !loadPreset(smokeDir + "/示例预设.fipreset", &restored, &error)) {
+        QFile result(smokeDir + "/gui-smoke-result.txt");
+        if (result.open(QIODevice::WriteOnly))
+            result.write(error.toUtf8());
+        QTimer::singleShot(0, qApp, [] { qApp->exit(1); });
+        return;
+    }
     QTimer::singleShot(60000, this, [this] {
         if (exporting && exportControl)
             exportControl->canceled.store(true);
