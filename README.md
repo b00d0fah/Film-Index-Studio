@@ -36,6 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Test -Dep
 ```
 
 VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `FilmLog: Release Package` 生成 `dist/` 便携版。
+便携版目录内双击 `启动 FilmLog Index Studio.bat` 即可启动，也可以直接运行 EXE。
 
 其他机器可安装 Qt 6.8.3 MinGW 桌面组件、qtimageformats、MinGW 13.1、CMake 与 Ninja，再设置上述路径。Qt 模板资源编译进 EXE，运行不需要 Python、Flask、原 FilmLog 或 Qt SDK。
 

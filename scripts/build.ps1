@@ -20,4 +20,5 @@ if($Deploy){
     if($LASTEXITCODE){throw 'Qt deployment failed'}
     Copy-Item "$projectRoot\README.md","$projectRoot\LICENSE","$projectRoot\THIRD_PARTY_NOTICES.md" $dist
     Copy-Item "$projectRoot\licenses" $dist -Recurse -Force
+    Copy-Item "$projectRoot\scripts\start-portable.bat" "$dist\启动 FilmLog Index Studio.bat"
 }
