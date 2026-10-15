@@ -1,9 +1,9 @@
 #pragma once
 #include "renderer.h"
-#include <QMainWindow>
 #include <QFutureWatcher>
-#include <QListWidget>
 #include <QGraphicsView>
+#include <QListWidget>
+#include <QMainWindow>
 #include <QTimer>
 #include <functional>
 
@@ -16,46 +16,51 @@ Q_DECLARE_METATYPE(Photo)
 
 class PhotoList : public QListWidget {
     Q_OBJECT
-public:
+  public:
     explicit PhotoList(QWidget *parent = nullptr);
-signals:
+  signals:
     void filesDropped(const QStringList &paths);
-protected:
+
+  protected:
     void dragEnterEvent(QDragEnterEvent *) override;
     void dragMoveEvent(QDragMoveEvent *) override;
     void dropEvent(QDropEvent *) override;
 };
 class Preview : public QGraphicsView {
     Q_OBJECT
-public:
+  public:
     explicit Preview(QWidget *parent = nullptr);
     void setImage(const QImage &image, const Document &d);
     void clearImage();
     void fit();
     void zoom(double factor);
     void selectPhoto(int index);
-signals:
+  signals:
     void photoClicked(int index);
-protected:
+
+  protected:
     void resizeEvent(QResizeEvent *) override;
     void wheelEvent(QWheelEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
-private:
+
+  private:
     bool fitted = true;
     QVector<QRectF> frames;
     QGraphicsRectItem *selection = nullptr;
 };
 class Window : public QMainWindow {
     Q_OBJECT
-public:
+  public:
     explicit Window();
     ~Window() override;
     void startSmokeTest(const QString &directory);
-protected:
+
+  protected:
     void closeEvent(QCloseEvent *) override;
     void dragEnterEvent(QDragEnterEvent *) override;
     void dropEvent(QDropEvent *) override;
-private:
+
+  private:
     Document doc;
     PhotoList *photos = nullptr;
     Preview *preview = nullptr;
