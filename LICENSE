@@ -1,0 +1,33 @@
+FilmLog Non-Commercial Source License
+
+Copyright (c) 2026 FilmLog contributors
+
+This project is made available as source code for personal, educational,
+research, review, and other non-commercial use only.
+
+Permission is granted, free of charge, to any person obtaining a copy of this
+software and associated documentation files (the "Software"), to use, copy,
+modify, and distribute copies of the Software for non-commercial purposes,
+subject to the following conditions:
+
+1. The copyright notice and this license notice must be included in all copies
+   or substantial portions of the Software.
+2. Commercial use is prohibited without prior written permission from the
+   copyright holders.
+3. Commercial use includes, but is not limited to, selling the Software,
+   offering the Software as a paid service, using the Software to provide paid
+   services, sublicensing the Software for commercial purposes, or including
+   the Software in a commercial product.
+4. Modified versions must clearly state that they have been modified.
+
+This license applies only to this project's own source code and documentation.
+Third-party dependencies, fonts, models, services, and other external assets
+remain governed by their own licenses and terms.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

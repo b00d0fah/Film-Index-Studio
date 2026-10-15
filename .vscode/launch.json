@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "name": "Debug FilmLog Index Studio", "type": "cppdbg", "request": "launch",
+    "program": "${workspaceFolder}/build/FilmLogIndexStudio.exe", "cwd": "${workspaceFolder}",
+    "MIMode": "gdb", "miDebuggerPath": "${env:USERPROFILE}/Documents/DevTools/TransWithAI/Qt/Tools/mingw1310_64/bin/gdb.exe",
+    "environment": [{"name":"PATH","value":"${env:USERPROFILE}/Documents/DevTools/TransWithAI/Qt/6.8.3/mingw_64/bin;${env:USERPROFILE}/Documents/DevTools/TransWithAI/Qt/Tools/mingw1310_64/bin;${env:PATH}"}],
+    "externalConsole": false, "preLaunchTask": "FilmLog: Debug Build"
+  }]
+}
