@@ -10,17 +10,32 @@
 #include <QPainter>
 #include <QSaveFile>
 #include <QtMath>
+#include <exception>
+#include <new>
+
+struct PreviewCache {
+    QCache<QString, QImage> images{128 * 1024};
+    QMutex mutex;
+};
+static PreviewCache &previewCache() {
+    static PreviewCache cache;
+    return cache;
+}
+void clearPreviewCache() {
+    auto &cache = previewCache();
+    QMutexLocker lock(&cache.mutex);
+    cache.images.clear();
+}
 
 // Immutable decoded previews are shared across edits; metadata invalidates changed sources.
 static QImage readPhoto(QImageReader &reader, int edge, bool cachePreview) {
-    static QCache<QString, QImage> cache(128 * 1024);
-    static QMutex mutex;
+    auto &cache = previewCache();
     const QFileInfo info(reader.fileName());
     const QString key = info.absoluteFilePath() + '|' + QString::number(info.lastModified().toMSecsSinceEpoch()) + '|' +
                         QString::number(info.size()) + '|' + QString::number(edge);
-    if (cachePreview) {
-        QMutexLocker lock(&mutex);
-        if (auto image = cache.object(key))
+    if (cachePreview && info.exists()) {
+        QMutexLocker lock(&cache.mutex);
+        if (auto image = cache.images.object(key))
             return *image;
     }
     const QSize input = reader.size();
@@ -30,8 +45,8 @@ static QImage readPhoto(QImageReader &reader, int edge, bool cachePreview) {
     if (!image.isNull() && image.colorSpace().isValid())
         image.convertToColorSpace(QColorSpace::SRgb);
     if (cachePreview && !image.isNull()) {
-        QMutexLocker lock(&mutex);
-        cache.insert(key, new QImage(image), int(image.sizeInBytes() / 1024) + 1);
+        QMutexLocker lock(&cache.mutex);
+        cache.images.insert(key, new QImage(image), int(image.sizeInBytes() / 1024) + 1);
     }
     return image;
 }
@@ -139,7 +154,7 @@ static QString backgroundImage(QPainter &p, const QRectF &dest, const ImageLayer
     reader.setAutoTransform(true);
     QImage image = readPhoto(reader, qMax(512, qCeil(qMax(dest.width(), dest.height()) * scale)), true);
     if (image.isNull())
-        return "背景图片无法读取：" + layer.path;
+        return "背景图片无法读取：" + layer.path + "\n" + reader.errorString();
     double w = image.width(), h = image.height();
     const double aspect = dest.width() / dest.height();
     if (w / h > aspect)
@@ -208,15 +223,19 @@ static QString drawOverlay(QPainter &p, const Overlay &o, const QRectF &area, bo
         reader.setAutoTransform(true);
         QImage img = readPhoto(reader, 2048, true);
         if (img.isNull())
-            error = "Logo / 水印图片无法读取：" + reader.fileName();
+            error = "Logo / 水印图片无法读取：" + reader.fileName() + "\n" + reader.errorString();
         else
             p.drawImage(rect, img);
     }
     p.restore();
     return error;
 }
-RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<RenderControl> &control) {
+static RenderResult renderSheetImpl(const Document &d, int width, const std::shared_ptr<RenderControl> &control) {
     RenderResult r;
+    if (control && control->canceled.load()) {
+        r.canceled = true;
+        return r;
+    }
     r.error = validateDocument(d);
     if (!r.error.isEmpty())
         return r;
@@ -267,9 +286,10 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
             return r;
         }
         const QString asset = templateFile(o, row);
-        QImage strip(asset);
+        QImageReader stripReader(asset);
+        QImage strip = stripReader.read();
         if (strip.isNull() || strip.size() != QSize(stripWidth, stripHeight)) {
-            r.error = "胶片模板损坏：" + asset;
+            r.error = "胶片模板无法读取或尺寸不是 4502 × 700：" + asset + "\n" + stripReader.errorString();
             return r;
         }
         int sy = (o.header ? o.headerHeight + o.headerGap : o.border) + row * (700 + o.gap);
@@ -297,6 +317,11 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
                 img = img.transformed(QTransform().rotate(90));
             if (photo.rotation)
                 img = img.transformed(QTransform().rotate(photo.rotation));
+            if (img.isNull()) {
+                r.error =
+                    QString("第 %1 张照片旋转时内存不足，请降低预览分辨率后重试。\n%2").arg(i + 1).arg(photo.path);
+                return r;
+            }
             if (o.fit) {
                 QSizeF fitted = QSizeF(img.size()).scaled(dest.size(), Qt::KeepAspectRatio);
                 QRectF target(dest.center().x() - fitted.width() / 2, dest.center().y() - fitted.height() / 2,
@@ -328,6 +353,17 @@ RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<Ren
     }
     r.image = canvas;
     return r;
+}
+RenderResult renderSheet(const Document &d, int width, const std::shared_ptr<RenderControl> &control) {
+    try {
+        return renderSheetImpl(d, width, control);
+    } catch (const std::bad_alloc &) {
+        return {{}, "渲染内存不足，请降低预览分辨率或输出宽度，然后重新生成。", false};
+    } catch (const std::exception &e) {
+        return {{}, "渲染发生异常：" + QString::fromLocal8Bit(e.what()), false};
+    } catch (...) {
+        return {{}, "渲染发生未知异常，请重新生成；若仍失败，请查看诊断日志。", false};
+    }
 }
 QString writeImage(const QImage &image, const QString &path, int quality,
                    const std::shared_ptr<RenderControl> &control) {

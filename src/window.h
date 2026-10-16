@@ -14,6 +14,7 @@ class QProgressDialog;
 class QComboBox;
 class QCloseEvent;
 class QProgressBar;
+class QPushButton;
 Q_DECLARE_METATYPE(Photo)
 
 class PhotoList : public QListWidget {
@@ -34,6 +35,7 @@ class Preview : public QGraphicsView {
     explicit Preview(QWidget *parent = nullptr);
     void setImage(const QImage &image, const Document &d);
     void clearImage();
+    void markStale();
     void fit();
     void zoom(double factor);
     void selectPhoto(int index);
@@ -82,6 +84,11 @@ class Window : public QMainWindow {
     QComboBox *startupPresets = nullptr;
     QString presetFolder;
     void refreshStartupPresets();
+    QPushButton *retryButton = nullptr, *failureButton = nullptr;
+    QString previewError, previewLogPath;
+    bool previewBusy = false, thumbnailBusy = false, retryFresh = false;
+    void retryPreview();
+    void previewFailed(const QString &error);
     int pendingFocus = 0;
     std::shared_ptr<RenderControl> previewControl, exportControl;
     QVector<std::function<void()>> bindings;

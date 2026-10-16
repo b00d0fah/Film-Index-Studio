@@ -1,22 +1,22 @@
-# Film Index Studio 1.0.3
+# Film Index Studio 1.0.4
 
-独立的 Windows C++ / Qt 索引图软件，当前版本 1.0.3。直接从 **1.0.1（a8d245f）** 开发，不基于 1.1.0。完整新功能和操作说明见 `USER_GUIDE.md`。
+独立的 Windows C++ / Qt 索引图软件，当前版本 1.0.4。直接从 **1.0.1（a8d245f）** 开发，不基于 1.1.0。完整新功能和操作说明见 `USER_GUIDE.md`。
 
-## 1.0.3 更新
+## 1.0.4 更新
 
-- 全新 35mm 胶卷罐与负片条 Logo，同步窗口、EXE 和默认画面 Logo。
-- 移除二级菜单的字体文件导入按钮，保留系统字体选择与旧预设字体兼容。
-- 水印默认横 50%、纵 5%、大小 300、不透明度 100%，默认仍关闭。
-- 固定预览进度栏高度，连续滚轮输入防抖合并，避免挤压画布和快速闪烁。
-- 二级设置以独立卡片底色、边框和展开状态区分。
-- 排版页新增启动预设选择，支持内置默认值、列表刷新和失效回退。
+- 使用项目所有者提供的 `03-retro-cards.png` 替换默认 Logo、窗口与 EXE 图标，保留透明度。
+- 所有二级设置在启动时默认收起。
+- 水印坐标明确标为水平 X（横）与垂直 Y（纵）；默认 50 / 5，并提供恢复默认位置按钮。修复旧预设缺少水印字段时未沿用默认值的问题。
+- Windows 同一登录会话保持一个实例，重复启动唤回已有窗口；退出或进程异常终止后锁由系统释放。
+- 预览失败保留上次成功画面，显示原因、诊断日志与重新生成入口；重试会清理图片缓存，重新读取源文件。
+- 修复未使用的背景/水印图片被校验阻断的问题，并防止渲染任务结束通知尚未处理时被新任务覆盖。
 
 ## 使用
 
 双击 `FilmIndexStudio.exe`。添加照片或文件夹，把当前这组照片排成一张索引图。
 
 - 保留 9 套胶片模板，每条 6 格，单张最多 42 张。没有批量任务或任务队列。
-- 页面中央实时预览：修改参数后防抖 160ms 自动渲染，后台渲染期间仍可编辑。旧结果自动丢弃，以最新设置为准。
+- 页面中央实时预览：修改参数后防抖 160ms 自动渲染，后台渲染期间仍可编辑。旧结果自动丢弃，以最新设置为准；失败时保留上次成功画面并标记失败状态。
 - 左侧可拖动排序、上下移动、按文件名自然排序、多选旋转/移除。
 - 点击预览中的照片选中；照片页可旋转、改变横纵裁切位置。支持中心裁切 3:2 或完整显示留边。
 - EXIF 自动转正；竖幅自动转横可以关闭。手动旋转在自动转正/转横之后应用。
@@ -48,7 +48,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Test -Deploy
 ```
 
-VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release Package` 生成 `dist/Film-Index-Studio-1.0.3/` 便携版，与旧版本隔离。部署不覆盖已有用户模板或预设。
+VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release Package` 生成 `dist/Film-Index-Studio-1.0.4/` 便携版，与旧版本隔离。部署不覆盖已有用户模板或预设。
 便携版目录内双击 `FilmIndexStudio.bat` 即可启动，也可以直接运行 EXE。
 
 其他机器可安装 Qt 6.8.3 MinGW 桌面组件、qtimageformats、MinGW 13.1、CMake 与 Ninja，再设置上述路径。Qt 模板资源编译进 EXE，运行不需要 Python、Flask 或 Qt SDK。
@@ -57,6 +57,7 @@ VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release
 
 - `src/document.*`：项目模型、参数验证、JSON 保存/加载。
 - `src/renderer.*`：预览与导出共用的图像排版器。
+- `src/singleinstance.*`：Windows 单实例锁与窗口唤醒。
 - `src/window.*`：中文原生桌面界面、后台预览与单次导出。
 - `tests/test_core.cpp`：模板、几何、裁切、项目、导出、取消与图像插件测试。
 - `assets/film_strips/135`：随独立软件发布的胶片资源。
@@ -66,3 +67,5 @@ VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release
 这是已修改的独立移植版本，来源为原项目 `FilmLog_project` 的索引图逻辑和胶片模板资源（源提交 `7c9a250`）。独立工作区和本地 Git 历史与原应用分开；原项目文件未修改，也未复制照片、数据库、环境变量或密钥。
 
 保留原项目 `FilmLog Non-Commercial Source License`，见 `LICENSE`。第三方组件及其源码获取方式见 `THIRD_PARTY_NOTICES.md` 与 `licenses/`。
+
+发行前验证：`scripts/build.ps1 -Test -Deploy`，随后关闭软件并运行 `scripts/test-single-instance.ps1`。发布变更见 `RELEASE_NOTES.md`。

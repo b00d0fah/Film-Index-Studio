@@ -112,6 +112,93 @@ class WindowTest : public QObject {
         QVERIFY(qAbs(view->transform().m11() - zoom) < 0.00001);
         view->viewport()->removeEventFilter(&recorder);
     }
+    void collapsedSectionsAndWatermarkAxes() {
+        QTemporaryDir temp;
+        Window window(temp.path());
+        for (auto toggle : window.findChildren<QToolButton *>("sectionToggle")) {
+            QVERIFY(!toggle->isChecked());
+            QCOMPARE(toggle->arrowType(), Qt::RightArrow);
+        }
+        for (auto body : window.findChildren<QWidget *>("sectionBody"))
+            QVERIFY(body->isHidden());
+        auto x = window.findChild<QSpinBox *>("watermarkX");
+        auto y = window.findChild<QSpinBox *>("watermarkY");
+        QCOMPARE(x->value(), 50);
+        QCOMPARE(y->value(), 5);
+        x->setValue(5);
+        y->setValue(50);
+        window.findChild<QPushButton *>("resetWatermarkPosition")->click();
+        QCOMPARE(x->value(), 50);
+        QCOMPARE(y->value(), 5);
+        bool horizontal = false, vertical = false;
+        for (auto label : window.findChildren<QLabel *>()) {
+            if (label->buddy() == x)
+                horizontal = label->text().contains("水平 X（横）");
+            if (label->buddy() == y)
+                vertical = label->text().contains("垂直 Y（纵）");
+        }
+        QVERIFY(horizontal && vertical);
+    }
+    void previewFailureAndRetryWithoutRestart() {
+        QTemporaryDir temp;
+        QImage source(420, 300, QImage::Format_RGB32);
+        source.fill(Qt::green);
+        const auto path = temp.filePath("可恢复照片.bmp");
+        QVERIFY(source.save(path));
+        Window window(temp.filePath("presets"));
+        window.show();
+        auto list = window.findChild<PhotoList *>("photoList");
+        auto view = window.findChild<Preview *>("preview");
+        auto bar = window.findChild<QProgressBar *>("previewProgress");
+        auto retry = window.findChild<QPushButton *>("retryPreview");
+        auto details = window.findChild<QPushButton *>("previewFailureDetails");
+        list->filesDropped({path});
+        QTRY_COMPARE_WITH_TIMEOUT(bar->format(), QString("预览已更新"), 10000);
+        view->zoom(3);
+        QTest::qWait(50);
+        const auto zoom = view->transform().m11();
+        const auto viewport = view->viewport()->size();
+        auto shown = [&] {
+            for (auto item : view->scene()->items())
+                if (auto pix = qgraphicsitem_cast<QGraphicsPixmapItem *>(item))
+                    return pix->pixmap().toImage();
+            return QImage();
+        };
+        const auto old = shown();
+        QVERIFY(!old.isNull());
+        QVERIFY(QFile::remove(path));
+        retry->click();
+        QTRY_VERIFY_WITH_TIMEOUT(details->isEnabled(), 10000);
+        QVERIFY(bar->toolTip().contains(path));
+        QVERIFY(bar->toolTip().contains("第 1 张照片"));
+        QCOMPARE(shown(), old);
+        QCOMPARE(view->viewport()->size(), viewport);
+        QCOMPARE(view->transform().m11(), zoom);
+        QFile log(temp.filePath("logs/preview-errors.log"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(log.readAll()).contains(path));
+        QTimer::singleShot(0, &window, [&window, &path] {
+            auto dialog = window.findChild<QMessageBox *>();
+            QVERIFY(dialog);
+            QVERIFY(dialog->informativeText().contains(path));
+            dialog->reject();
+        });
+        details->click();
+        source.fill(Qt::red);
+        QVERIFY(source.save(path));
+        // Repeated requests while work is pending must settle on the latest revision.
+        for (int i = 0; i < 10; ++i) {
+            retry->click();
+            QTest::qWait(5);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(bar->format(), QString("预览已更新"), 10000);
+        QVERIFY(!details->isEnabled());
+        QVERIFY(bar->toolTip().isEmpty());
+        QVERIFY(shown() != old);
+        QCOMPARE(list->count(), 1);
+        QCOMPARE(view->viewport()->size(), viewport);
+        QCOMPARE(view->transform().m11(), zoom);
+    }
     void chineseDialogsAndPresetKeepsPhotos() {
         QTranslator chinese;
         QVERIFY(chinese.load(":/assets/translations/qtbase_zh_CN.qm"));

@@ -13,12 +13,12 @@ cmake --build "$projectRoot\build" --parallel 6
 if($LASTEXITCODE){throw 'Build failed'}
 if($Test){ctest --test-dir "$projectRoot\build" --output-on-failure;if($LASTEXITCODE){throw 'Tests failed'}}
 if($Deploy){
-    $dist=Join-Path $projectRoot 'dist\Film-Index-Studio-1.0.3'
+    $dist=Join-Path $projectRoot 'dist\Film-Index-Studio-1.0.4'
     New-Item -ItemType Directory -Force $dist | Out-Null
     Copy-Item "$projectRoot\build\FilmIndexStudio.exe" $dist
     & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "$dist\FilmIndexStudio.exe"
     if($LASTEXITCODE){throw 'Qt deployment failed'}
-    Copy-Item "$projectRoot\README.md","$projectRoot\USER_GUIDE.md","$projectRoot\LICENSE","$projectRoot\THIRD_PARTY_NOTICES.md" $dist
+    Copy-Item "$projectRoot\README.md","$projectRoot\USER_GUIDE.md","$projectRoot\LICENSE","$projectRoot\THIRD_PARTY_NOTICES.md","$projectRoot\RELEASE_NOTES.md" $dist
     Copy-Item "$projectRoot\licenses" $dist -Recurse -Force
     Copy-Item "$projectRoot\scripts\start-portable.bat" "$dist\FilmIndexStudio.bat"
     New-Item -ItemType Directory -Force "$dist\templates","$dist\presets" | Out-Null

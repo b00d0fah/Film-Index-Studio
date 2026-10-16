@@ -20,6 +20,7 @@ QSize outputSize(const Document &d, int width = 0);
 qreal alignedTextX(const QRectF &column, qreal textWidth, int alignment);
 QRectF headerBlockRect(const Options &o, int width, int block);
 QRectF overlayRect(const Overlay &o, const QRectF &area, bool logo);
+void clearPreviewCache();
 RenderResult renderSheet(const Document &d, int width = 0, const std::shared_ptr<RenderControl> &control = {});
 QString writeImage(const QImage &image, const QString &path, int quality,
                    const std::shared_ptr<RenderControl> &control = {});

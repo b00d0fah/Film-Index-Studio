@@ -36,15 +36,14 @@ static QJsonObject overlayJson(const Overlay &v) {
             {"opacity", v.opacity},       {"path", v.path}, {"text", v.text}, {"type", v.type},
             {"style", styleJson(v.style)}};
 }
-static Overlay readOverlay(const QJsonObject &v) {
-    Overlay o;
+static Overlay readOverlay(const QJsonObject &v, Overlay o) {
     o.enabled = v["enabled"].toBool();
-    o.x = v["x"].toInt(50);
-    o.y = v["y"].toInt(50);
-    o.size = v["size"].toInt(160);
+    o.x = v["x"].toInt(o.x);
+    o.y = v["y"].toInt(o.y);
+    o.size = v["size"].toInt(o.size);
     o.opacity = v["opacity"].toInt(100);
     o.path = v["path"].toString();
-    o.text = v["text"].toString();
+    o.text = v["text"].toString(o.text);
     o.type = v["type"].toInt();
     o.style = readStyle(v["style"].toObject());
     return o;
@@ -180,17 +179,21 @@ QString validateDocument(const Document &d, bool requirePhotos) {
         o.leftX > 4502 || o.rightX < 0 || o.rightX > 4502 || o.leftY < 0 || o.leftY > 1000 || o.rightY < 0 ||
         o.rightY > 1000)
         return "对齐、间距或分辨率参数无效。";
-    for (auto layer : {o.headerImage, o.indexImage}) {
+    for (const auto *layerPtr : {&o.headerImage, &o.indexImage}) {
+        const auto &layer = *layerPtr;
         if (!percent(layer.opacity) || !percent(layer.cropX) || !percent(layer.cropY))
             return "背景图片参数无效。";
-        if (!layer.path.isEmpty() && !QFileInfo::exists(layer.path))
+        if ((layerPtr != &o.headerImage || o.header) && layer.opacity > 0 && !layer.path.isEmpty() &&
+            !QFileInfo::exists(layer.path))
             return "背景图片不存在：" + layer.path;
     }
-    for (auto v : {o.logo, o.watermark}) {
+    for (const auto *overlay : {&o.logo, &o.watermark}) {
+        const auto &v = *overlay;
         if (!percent(v.x) || !percent(v.y) || !percent(v.opacity) || v.size < 16 || v.size > 2000 || v.type < 0 ||
             v.type > 1 || !v.style.color.isValid())
             return "Logo 或水印参数无效。";
-        if (v.enabled && !v.path.isEmpty() && !QFileInfo::exists(v.path))
+        const bool usesImage = overlay == &o.logo ? o.header : v.type == 1;
+        if (v.enabled && v.opacity > 0 && usesImage && !v.path.isEmpty() && !QFileInfo::exists(v.path))
             return "Logo 或水印图片不存在：" + v.path;
     }
     for (const auto &style : o.textStyles)
@@ -358,8 +361,8 @@ bool loadDocument(const QString &path, Document *doc, QString *error) {
             s.color = o.textColor;
     o.headerImage = readImage(opts["headerImage"].toObject());
     o.indexImage = readImage(opts["indexImage"].toObject());
-    o.logo = readOverlay(opts["logo"].toObject());
-    o.watermark = readOverlay(opts["watermark"].toObject());
+    o.logo = readOverlay(opts["logo"].toObject(), o.logo);
+    o.watermark = readOverlay(opts["watermark"].toObject(), o.watermark);
     const QDir base = QFileInfo(path).absoluteDir();
     for (const auto &v : root["photos"].toArray()) {
         if (!v.isObject() || v.toObject()["path"].toString().isEmpty()) {

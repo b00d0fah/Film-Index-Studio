@@ -57,6 +57,11 @@ void Preview::clearImage() {
     frames.clear();
     scene()->setSceneRect({});
 }
+void Preview::markStale() {
+    frames.clear();
+    if (selection)
+        selection->hide();
+}
 void Preview::setImage(const QImage &image, const Document &d) {
     const QRectF old = scene()->sceneRect();
     const QPointF center = mapToScene(viewport()->rect().center());
@@ -180,6 +185,7 @@ Window::Window(const QString &presetDirectory)
     });
     progressTimer.start();
     connect(&thumbnailWatcher, &QFutureWatcher<QVector<QPair<QString, QImage>>>::finished, this, [this] {
+        thumbnailBusy = false;
         for (const auto &entry : thumbnailWatcher.result())
             thumbnails.insert(entry.first, entry.second);
         QStringList failed;
@@ -204,25 +210,29 @@ Window::Window(const QString &presetDirectory)
     debounce.setInterval(160);
     connect(&debounce, &QTimer::timeout, this, &Window::startPreview);
     connect(&previewWatcher, &QFutureWatcher<RenderResult>::finished, this, [this] {
+        previewBusy = false;
         if (renderingRevision != revision) {
             if (!debounce.isActive())
                 debounce.start();
             return;
         }
+        auto result = previewWatcher.result();
+        if (result.canceled) {
+            if (!doc.photos.isEmpty())
+                debounce.start();
+            return;
+        }
+        if (!result.error.isEmpty() || result.image.isNull()) {
+            previewFailed(result.error.isEmpty() ? "渲染返回空图像，请降低预览分辨率后重试。" : result.error);
+            return;
+        }
+        previewError.clear();
+        failureButton->setEnabled(false);
+        previewInfo->setToolTip({});
+        previewProgress->setToolTip({});
         previewProgress->setRange(0, 100);
         previewProgress->setValue(100);
         previewProgress->setFormat("预览已更新");
-        auto result = previewWatcher.result();
-        if (result.canceled)
-            return;
-        if (!result.error.isEmpty()) {
-            preview->clearImage();
-            previewInfo->setText("预览失败 · 请检查照片");
-            previewProgress->setValue(0);
-            previewProgress->setFormat("预览失败");
-            statusBar()->showMessage(result.error);
-            return;
-        }
         preview->setImage(result.image, doc);
         preview->selectPhoto(photos->currentRow());
         const auto base = baseSheetSize(doc);
@@ -403,7 +413,32 @@ void Window::buildUi() {
     previewProgress->setRange(0, 100);
     previewProgress->setValue(0);
     previewProgress->setFixedHeight(20);
-    cl->addWidget(previewProgress);
+    auto progressRow = new QHBoxLayout;
+    progressRow->addWidget(previewProgress, 1);
+    retryButton = button(progressRow, "重新生成", [this] { retryPreview(); }, "retryPreview");
+    retryButton->setEnabled(false);
+    retryButton->setToolTip("重新读取源文件并生成预览；保留当前照片、设置和缩放。");
+    failureButton = button(
+        progressRow, "失败详情",
+        [this] {
+            QMessageBox details(this);
+            details.setWindowTitle("预览失败原因");
+            details.setTextFormat(Qt::PlainText);
+            details.setIcon(QMessageBox::Warning);
+            details.setText(preview->scene()->items().isEmpty() ? "预览生成失败，修复原因后可重新生成。"
+                                                                : "预览生成失败，上次成功的画面已保留。");
+            details.setInformativeText(
+                previewError + "\n\n请检查相关文件是否存在、能否打开；内存不足时降低预览分辨率。修复后点击重新生成。");
+            details.setDetailedText("诊断日志：" + previewLogPath + "\n\n" + previewError);
+            auto retry = details.addButton("重新生成", QMessageBox::AcceptRole);
+            details.addButton("关闭", QMessageBox::RejectRole);
+            details.exec();
+            if (details.clickedButton() == retry)
+                retryPreview();
+        },
+        "previewFailureDetails");
+    failureButton->setEnabled(false);
+    cl->addLayout(progressRow);
     auto help = new QLabel("点击预览中的照片进行调整  ·  Ctrl + 滚轮缩放  ·  拖动平移");
     help->setObjectName("muted");
     help->setAlignment(Qt::AlignCenter);
@@ -430,7 +465,7 @@ void Window::buildUi() {
     auto photo = formTab("照片");
     photo->setProperty("focusRegion", 7);
     auto tag = [](QWidget *w, QFormLayout *f) { w->setProperty("focusRegion", f->property("focusRegion")); };
-    auto section = [&](QFormLayout *parent, const QString &title, int focus, bool expanded = false) {
+    auto section = [&](QFormLayout *parent, const QString &title, int focus) {
         auto container = new QFrame;
         container->setObjectName("settingsSection");
         auto box = new QVBoxLayout(container);
@@ -440,9 +475,9 @@ void Window::buildUi() {
         toggle->setText(title);
         toggle->setObjectName("sectionToggle");
         toggle->setCheckable(true);
-        toggle->setChecked(expanded);
+        toggle->setChecked(false);
         toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        toggle->setArrowType(Qt::RightArrow);
         toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         auto body = new QWidget;
         body->setObjectName("sectionBody");
@@ -451,7 +486,7 @@ void Window::buildUi() {
         f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         f->setVerticalSpacing(10);
         f->setProperty("focusRegion", focus);
-        body->setVisible(expanded);
+        body->setVisible(false);
         box->addWidget(toggle);
         box->addWidget(body);
         parent->addRow(container);
@@ -673,16 +708,27 @@ void Window::buildUi() {
             fontControl(f, &v->style);
         }
         imagePicker(f, &v->path, isLogo ? "自定义 Logo" : "水印图片");
-        spin(f, "位置 · 横 %", &v->x, 0, 100, isLogo ? "logoX" : "watermarkX");
-        spin(f, "位置 · 纵 %", &v->y, 0, 100, isLogo ? "logoY" : "watermarkY");
+        spin(f, "水平 X（横）%", &v->x, 0, 100, isLogo ? "logoX" : "watermarkX");
+        spin(f, "垂直 Y（纵）%", &v->y, 0, 100, isLogo ? "logoY" : "watermarkY");
         spin(f, isLogo ? "Logo 尺寸" : "字号 / 图片尺寸", &v->size, 16, 2000, isLogo ? "logoSize" : "watermarkSize");
         spin(f, "不透明度 %", &v->opacity, 0, 100, isLogo ? "logoOpacity" : "watermarkOpacity");
+        if (!isLogo) {
+            auto resetPosition = new QPushButton("恢复默认位置（横 50 / 纵 5）");
+            resetPosition->setObjectName("resetWatermarkPosition");
+            f->addRow(resetPosition);
+            connect(resetPosition, &QPushButton::clicked, this, [this, v] {
+                v->x = 50;
+                v->y = 5;
+                syncControls();
+                changed(11);
+            });
+        }
         tip(f, isLogo ? "Logo 显示在标题栏；未选图片时使用内置 Logo。坐标按可移动空间计算，0% 靠左/上，100% 靠右/下。"
                       : "水印位于整张索引图最上层；图片保持比例，位置以可移动空间百分比表示。");
     };
-    overlayControls(section(layout, "Logo", 10, true), &o.logo, true);
+    overlayControls(section(layout, "Logo", 10), &o.logo, true);
     overlayControls(section(layout, "自定义水印", 11), &o.watermark, false);
-    auto startup = section(layout, "启动预设", 0, true);
+    auto startup = section(layout, "启动预设", 0);
     startupPresets = new QComboBox;
     startupPresets->setObjectName("startupPreset");
     startupPresets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -715,7 +761,7 @@ void Window::buildUi() {
         statusBar()->showMessage("启动预设已设置，下次启动生效；当前编辑保持不变。");
     });
     tip(startup, "仅列出软件 presets 文件夹内已保存的预设。选择后下次启动生效；选择内置默认值可取消自动加载。");
-    auto output = section(layout, "预览与输出", 0, true);
+    auto output = section(layout, "预览与输出", 0);
     spin(output, "预览宽度 px", &o.previewWidth, 600, 4572, "previewWidth");
     auto unit = new QComboBox;
     unit->addItems({"px（像素）", "毫米 mm", "厘米 cm", "英寸 in"});
@@ -786,14 +832,14 @@ void Window::buildUi() {
     alignControls(true);
     tip(text, "自定义坐标以各栏左上角为原点、按模板原始像素调整，越界自动限制在栏内；普通对齐时忽略自定义坐标。长文本自"
               "动省略。");
-    auto main = section(text, "主标题", 1, true);
+    auto main = section(text, "主标题", 1);
     line(main, "主标题", &o.brand, "mainTitle");
     spin(main, "主标题字号", &o.brandSize, 20, 180);
     fontControl(main, &o.textStyles[0]);
     auto note = section(text, "左侧备注", 2);
     line(note, "左侧备注", &o.note);
     fontControl(note, &o.textStyles[1]);
-    auto title = section(text, "胶卷标题", 3, true);
+    auto title = section(text, "胶卷标题", 3);
     line(title, "胶卷标题", &o.title, "titleText");
     spin(title, "标题字号", &o.titleSize, 20, 120);
     fontControl(title, &o.textStyles[2]);
@@ -933,7 +979,12 @@ void Window::changed(int focus) {
     count->setText(QString("照片  %1 / 42").arg(doc.photos.size()));
     if (previewControl)
         previewControl->canceled.store(true);
+    retryButton->setEnabled(!doc.photos.isEmpty());
     if (doc.photos.isEmpty()) {
+        previewError.clear();
+        failureButton->setEnabled(false);
+        previewInfo->setToolTip({});
+        previewProgress->setToolTip({});
         previewProgress->setRange(0, 100);
         previewProgress->setValue(0);
         previewProgress->setFormat("等待添加照片");
@@ -952,15 +1003,74 @@ void Window::updateTitle() {
             .arg(projectPath.isEmpty() ? "当前索引图" : QFileInfo(projectPath).fileName(), dirty ? " *" : ""));
 }
 void Window::startPreview() {
-    if (previewWatcher.isRunning() || doc.photos.isEmpty())
+    // A finished worker still has a queued finished signal. Do not replace its future before consuming it.
+    if (previewBusy || doc.photos.isEmpty())
         return;
+    previewBusy = true;
     renderingRevision = revision;
     renderElapsed.start();
+    if (retryFresh) {
+        clearPreviewCache();
+        retryFresh = false;
+    }
     previewControl = std::make_shared<RenderControl>();
     Document snapshot = doc;
     auto control = previewControl;
     previewWatcher.setFuture(QtConcurrent::run(
         [snapshot, control] { return renderSheet(snapshot, snapshot.options.previewWidth, control); }));
+}
+void Window::retryPreview() {
+    if (doc.photos.isEmpty())
+        return;
+    ++revision;
+    pendingFocus = 0;
+    retryFresh = true;
+    if (previewControl)
+        previewControl->canceled.store(true);
+    previewProgress->setFormat("等待重新生成…");
+    // Null thumbnail entries are not permanent failures: source files may have become readable again.
+    for (auto it = thumbnails.begin(); it != thumbnails.end();) {
+        if (it.value().isNull())
+            it = thumbnails.erase(it);
+        else
+            ++it;
+    }
+    startThumbnails();
+    debounce.start(0);
+}
+void Window::previewFailed(const QString &error) {
+    previewError = error;
+    preview->markStale();
+    previewInfo->setText("预览失败 · " + error.section('\n', 0, 0).section(QChar(0xff1a), 0, 0));
+    previewInfo->setToolTip(error);
+    previewProgress->setRange(0, 100);
+    previewProgress->setValue(0);
+    previewProgress->setFormat("生成失败 · 点击失败详情查看原因");
+    previewProgress->setToolTip(error);
+    failureButton->setEnabled(true);
+    statusBar()->showMessage(preview->scene()->items().isEmpty()
+                                 ? "预览失败。查看失败详情后可重新生成。"
+                                 : "预览失败，已保留上次成功画面。查看失败详情后可重新生成。");
+    const QString record =
+        QString("[%1] Film Index Studio %2 | preview=%3 | photos=%4\n%5\n\n")
+            .arg(QDateTime::currentDateTime().toString(Qt::ISODate), QCoreApplication::applicationVersion())
+            .arg(doc.options.previewWidth)
+            .arg(doc.photos.size())
+            .arg(error);
+    previewLogPath = "日志写入失败：请复制上方错误信息。";
+    for (const auto &folder : {QFileInfo(presetFolder).absolutePath() + "/logs",
+                               QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs"}) {
+        if (!QDir().mkpath(folder))
+            continue;
+        QFile log(folder + "/preview-errors.log");
+        if (!log.open(QIODevice::WriteOnly | (log.size() > 1024 * 1024 ? QIODevice::Truncate : QIODevice::Append)))
+            continue;
+        const auto bytes = record.toUtf8();
+        if (log.write(bytes) == bytes.size() && log.flush()) {
+            previewLogPath = log.fileName();
+            break;
+        }
+    }
 }
 void Window::collectPhotos() {
     doc.photos.clear();
@@ -992,7 +1102,7 @@ void Window::rebuildPhotos() {
     startThumbnails();
 }
 void Window::startThumbnails() {
-    if (thumbnailWatcher.isRunning())
+    if (thumbnailBusy)
         return;
     QStringList paths;
     for (const auto &p : doc.photos)
@@ -1001,6 +1111,7 @@ void Window::startThumbnails() {
     paths.removeDuplicates();
     if (paths.isEmpty())
         return;
+    thumbnailBusy = true;
     thumbnailControl = std::make_shared<RenderControl>();
     auto control = thumbnailControl;
     thumbnailProgress->setRange(0, paths.size());
@@ -1326,8 +1437,8 @@ void Window::startSmokeTest(const QString &directory) {
     doc.options.logo.size = 240;
     doc.options.watermark.enabled = true;
     doc.options.watermark.text = "FILM INDEX / 2026";
-    doc.options.watermark.x = 95;
-    doc.options.watermark.y = 98;
+    doc.options.watermark.x = 50;
+    doc.options.watermark.y = 5;
     doc.options.watermark.style.color = QColor("#ffffff");
     doc.options.textStyles[1].color = QColor("#80dfba");
     QImage backdrop(1200, 800, QImage::Format_RGB32);

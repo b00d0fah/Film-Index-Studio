@@ -33,6 +33,88 @@ class CoreTest : public QObject {
                 img.setPixelColor(x, y, Qt::blue);
         QVERIFY(img.save(photo));
     }
+    void watermarkDefaultsAndCoordinateMapping() {
+        Options options;
+        QCOMPARE(options.watermark.x, 50);
+        QCOMPARE(options.watermark.y, 5);
+        const QRectF area(20, 20, 4532, 4000);
+        const auto rect = overlayRect(options.watermark, area, false);
+        QVERIFY(qAbs(rect.center().x() - area.center().x()) < 0.001);
+        QVERIFY(qAbs(rect.top() - (area.top() + (area.height() - rect.height()) * 0.05)) < 0.001);
+        Document d = make();
+        QString error;
+        auto path = temp.filePath("legacy-defaults.findex");
+        QVERIFY(saveDocument(d, path, &error));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        auto json = QJsonDocument::fromJson(file.readAll()).object();
+        file.close();
+        auto opts = json["options"].toObject();
+        opts.remove("watermark");
+        json["options"] = opts;
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(QJsonDocument(json).toJson());
+        file.close();
+        Document restored;
+        QVERIFY2(loadDocument(path, &restored, &error), qUtf8Printable(error));
+        QCOMPARE(restored.options.watermark.x, 50);
+        QCOMPARE(restored.options.watermark.y, 5);
+        QCOMPARE(restored.options.watermark.size, 300);
+    }
+    void inactiveImagesDoNotBlockRendering() {
+        auto d = make();
+        const auto missing = temp.filePath("不存在的背景.png");
+        d.options.header = false;
+        d.options.headerImage.path = missing;
+        d.options.indexImage = {missing, 0, 50, 50};
+        d.options.logo.enabled = true;
+        d.options.logo.path = missing;
+        d.options.watermark.enabled = true;
+        d.options.watermark.type = 0;
+        d.options.watermark.path = missing;
+        auto result = renderSheet(d, 600);
+        QVERIFY2(result.error.isEmpty(), qUtf8Printable(result.error));
+        QVERIFY(!result.image.isNull());
+        d.options.watermark.type = 1;
+        result = renderSheet(d, 600);
+        QVERIFY(result.error.contains(missing));
+        d.options.watermark.opacity = 0;
+        QVERIFY(renderSheet(d, 600).error.isEmpty());
+        d.options.header = true;
+        QVERIFY(renderSheet(d, 600).error.contains(missing));
+    }
+    void retryCacheAndDecoderErrors() {
+        auto d = make();
+        const auto path = temp.filePath("cache-retry.bmp");
+        QImage img(400, 300, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        QVERIFY(img.save(path));
+        d.photos[0].path = path;
+        const auto previousTime = QFileInfo(path).lastModified();
+        const auto first = renderSheet(d, 600);
+        QVERIFY(first.error.isEmpty());
+        img.fill(Qt::blue);
+        QVERIFY(img.save(path));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadWrite));
+        QVERIFY(file.setFileTime(previousTime, QFileDevice::FileModificationTime));
+        file.close();
+        clearPreviewCache();
+        const auto second = renderSheet(d, 600);
+        QVERIFY(second.error.isEmpty());
+        QVERIFY(first.image != second.image);
+        QVERIFY(QFile::remove(path));
+        QVERIFY(renderSheet(d, 600).error.contains(path));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("not an image");
+        file.close();
+        auto failed = renderSheet(d, 600);
+        QVERIFY(failed.error.contains("第 1 张照片"));
+        QVERIFY(failed.error.contains('\n'));
+        auto control = std::make_shared<RenderControl>();
+        control->canceled = true;
+        QVERIFY(renderSheet(d, 600, control).canceled);
+    }
     void geometry() {
         auto d = make(7);
         QCOMPARE(baseSheetSize(d), QSize(4572, 1975));
