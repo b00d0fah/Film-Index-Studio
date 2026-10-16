@@ -13,7 +13,7 @@ cmake --build "$projectRoot\build" --parallel 6
 if($LASTEXITCODE){throw 'Build failed'}
 if($Test){ctest --test-dir "$projectRoot\build" --output-on-failure;if($LASTEXITCODE){throw 'Tests failed'}}
 if($Deploy){
-    $dist=Join-Path $projectRoot 'dist\Film-Index-Studio-1.0.2'
+    $dist=Join-Path $projectRoot 'dist\Film-Index-Studio-1.0.3'
     New-Item -ItemType Directory -Force $dist | Out-Null
     Copy-Item "$projectRoot\build\FilmIndexStudio.exe" $dist
     & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-opengl-sw --no-system-d3d-compiler "$dist\FilmIndexStudio.exe"

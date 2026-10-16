@@ -1,6 +1,15 @@
-# Film Index Studio 1.0.2
+# Film Index Studio 1.0.3
 
-独立的 Windows C++ / Qt 索引图软件，当前版本 1.0.2。直接从 **1.0.1（a8d245f）** 开发，不基于 1.1.0。完整新功能和操作说明见 `USER_GUIDE.md`。
+独立的 Windows C++ / Qt 索引图软件，当前版本 1.0.3。直接从 **1.0.1（a8d245f）** 开发，不基于 1.1.0。完整新功能和操作说明见 `USER_GUIDE.md`。
+
+## 1.0.3 更新
+
+- 全新 35mm 胶卷罐与负片条 Logo，同步窗口、EXE 和默认画面 Logo。
+- 移除二级菜单的字体文件导入按钮，保留系统字体选择与旧预设字体兼容。
+- 水印默认横 50%、纵 5%、大小 300、不透明度 100%，默认仍关闭。
+- 固定预览进度栏高度，连续滚轮输入防抖合并，避免挤压画布和快速闪烁。
+- 二级设置以独立卡片底色、边框和展开状态区分。
+- 排版页新增启动预设选择，支持内置默认值、列表刷新和失效回退。
 
 ## 使用
 
@@ -39,7 +48,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Test -Deploy
 ```
 
-VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release Package` 生成 `dist/Film-Index-Studio-1.0.2/` 便携版，与旧版本隔离。部署不覆盖已有用户模板或预设。
+VS Code：Ctrl+Shift+B 构建与测试，F5 调试，运行 `Film Index: Release Package` 生成 `dist/Film-Index-Studio-1.0.3/` 便携版，与旧版本隔离。部署不覆盖已有用户模板或预设。
 便携版目录内双击 `FilmIndexStudio.bat` 即可启动，也可以直接运行 EXE。
 
 其他机器可安装 Qt 6.8.3 MinGW 桌面组件、qtimageformats、MinGW 13.1、CMake 与 Ninja，再设置上述路径。Qt 模板资源编译进 EXE，运行不需要 Python、Flask 或 Qt SDK。

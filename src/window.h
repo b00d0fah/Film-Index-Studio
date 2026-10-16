@@ -1,5 +1,6 @@
 #pragma once
 #include "renderer.h"
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QGraphicsView>
 #include <QListWidget>
@@ -54,7 +55,7 @@ class Preview : public QGraphicsView {
 class Window : public QMainWindow {
     Q_OBJECT
   public:
-    explicit Window();
+    explicit Window(const QString &presetDirectory = {});
     ~Window() override;
     void startSmokeTest(const QString &directory);
 
@@ -77,6 +78,10 @@ class Window : public QMainWindow {
     QHash<QString, QImage> thumbnails;
     QProgressBar *previewProgress = nullptr, *thumbnailProgress = nullptr;
     QTimer progressTimer;
+    QElapsedTimer renderElapsed;
+    QComboBox *startupPresets = nullptr;
+    QString presetFolder;
+    void refreshStartupPresets();
     int pendingFocus = 0;
     std::shared_ptr<RenderControl> previewControl, exportControl;
     QVector<std::function<void()>> bindings;

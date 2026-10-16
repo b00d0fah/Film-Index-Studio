@@ -2,11 +2,115 @@
 #include <QtTest>
 #include <QtWidgets>
 
+class ResizeRecorder : public QObject {
+  public:
+    int count = 0;
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Resize)
+            ++count;
+        return false;
+    }
+};
+
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
     void initTestCase() {
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
+    }
+    void startupPresetPersistsAndRecovers() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        Options saved;
+        saved.brand = "我的启动预设";
+        saved.watermark.y = 77;
+        saved.watermark.opacity = 23;
+        QString error;
+        const auto path = temp.filePath("日常预设.fipreset");
+        QVERIFY2(savePreset(saved, path, &error), qUtf8Printable(error));
+        {
+            Window window(temp.path());
+            auto presets = window.findChild<QComboBox *>("startupPreset");
+            QVERIFY(presets);
+            QCOMPARE(presets->count(), 2);
+            presets->setCurrentIndex(1);
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), QString("Film Index"));
+        }
+        {
+            Window window(temp.path());
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), saved.brand);
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkY")->value(), 77);
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkOpacity")->value(), 23);
+            QCOMPARE(window.findChild<PhotoList *>("photoList")->count(), 0);
+            window.findChild<QComboBox *>("startupPreset")->setCurrentIndex(0);
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), saved.brand);
+        }
+        {
+            Window window(temp.path());
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), QString("Film Index"));
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkX")->value(), 50);
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkY")->value(), 5);
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkSize")->value(), 300);
+            QCOMPARE(window.findChild<QSpinBox *>("watermarkOpacity")->value(), 100);
+            QVERIFY(!window.findChild<QCheckBox *>("showWatermark")->isChecked());
+            for (auto button : window.findChildren<QPushButton *>())
+                QVERIFY(!button->text().contains("导入字体"));
+            window.findChild<QComboBox *>("startupPreset")->setCurrentIndex(1);
+        }
+        // Broken and missing defaults must never prevent startup or partially apply settings.
+        QFile corrupt(path);
+        QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        corrupt.write("invalid preset");
+        corrupt.close();
+        {
+            Window window(temp.path());
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), QString("Film Index"));
+            QVERIFY(window.statusBar()->currentMessage().contains("不可用"));
+        }
+        QVERIFY(QFile::remove(path));
+        {
+            Window window(temp.path());
+            auto presets = window.findChild<QComboBox *>("startupPreset");
+            QVERIFY(presets->currentText().contains("不可用"));
+            QCOMPARE(window.findChild<QLineEdit *>("mainTitle")->text(), QString("Film Index"));
+            presets->setCurrentIndex(0);
+        }
+    }
+    void wheelUpdatesKeepPreviewGeometryStable() {
+        QTemporaryDir temp;
+        QImage source(400, 300, QImage::Format_RGB32);
+        source.fill(Qt::blue);
+        auto path = temp.filePath("photo.png");
+        QVERIFY(source.save(path));
+        Window window(temp.path());
+        window.show();
+        auto view = window.findChild<Preview *>("preview");
+        auto bar = window.findChild<QProgressBar *>("previewProgress");
+        auto title = window.findChild<QSpinBox *>("borderSize");
+        window.findChild<PhotoList *>("photoList")->filesDropped({path});
+        QTRY_COMPARE_WITH_TIMEOUT(bar->format(), QString("预览已更新"), 10000);
+        view->zoom(4);
+        QTest::qWait(50);
+        const auto size = view->viewport()->size();
+        const double zoom = view->transform().m11();
+        ResizeRecorder recorder;
+        view->viewport()->installEventFilter(&recorder);
+        const int previous = title->value();
+        for (int i = 0; i < 14; ++i) {
+            const QPointF local(title->rect().center());
+            QWheelEvent wheel(local, title->mapToGlobal(local.toPoint()), QPoint(), QPoint(0, 120), Qt::NoButton,
+                              Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(title, &wheel);
+            QTest::qWait(i < 7 ? 35 : 180);
+            QCOMPARE(view->viewport()->size(), size);
+            QVERIFY(bar->isVisible());
+        }
+        QVERIFY(title->value() > previous);
+        QTRY_COMPARE_WITH_TIMEOUT(bar->format(), QString("预览已更新"), 10000);
+        QCOMPARE(view->viewport()->size(), size);
+        QCOMPARE(recorder.count, 0);
+        QVERIFY(qAbs(view->transform().m11() - zoom) < 0.00001);
+        view->viewport()->removeEventFilter(&recorder);
     }
     void chineseDialogsAndPresetKeepsPhotos() {
         QTranslator chinese;
@@ -169,7 +273,8 @@ class WindowTest : public QObject {
         view->zoom(4);
         auto crop = window.findChild<QSlider *>("cropX");
         crop->setValue(75);
-        QTRY_VERIFY_WITH_TIMEOUT(info->text().contains(dimensions), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QProgressBar *>("previewProgress")->format(), QString("预览已更新"),
+                                  10000);
         const QPointF target = photoRect(expected, 5).center() * scale;
         // Near sheet edges the view clamps scrolling; the edited photo must at least be visible.
         QVERIFY(view->viewport()->rect().contains(view->mapFromScene(target)));

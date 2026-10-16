@@ -146,7 +146,22 @@ static Photo itemPhoto(const QListWidgetItem *item) {
     const QVariant data = item->data(Qt::UserRole);
     return data.value<Photo>();
 }
-Window::Window() {
+Window::Window(const QString &presetDirectory)
+    : presetFolder(presetDirectory.isEmpty() ? QCoreApplication::applicationDirPath() + "/presets" : presetDirectory) {
+    QString startupMessage;
+    QSettings settings(presetFolder + "/startup.ini", QSettings::IniFormat);
+    const QString selected = settings.value("startup/preset").toString();
+    if (!selected.isEmpty()) {
+        Options loaded;
+        QString error;
+        if (QFileInfo(selected).fileName() == selected && loadPreset(presetFolder + '/' + selected, &loaded, &error)) {
+            doc.options = loaded;
+            projectPath = presetFolder + '/' + selected;
+            startupMessage = "已加载启动预设：" + QFileInfo(selected).completeBaseName();
+        } else {
+            startupMessage = "启动预设不可用，已使用内置默认值。请在排版 → 启动预设重新选择。";
+        }
+    }
     setAcceptDrops(true);
     resize(1440, 900);
     setMinimumSize(1080, 680);
@@ -154,8 +169,9 @@ Window::Window() {
     buildUi();
     progressTimer.setInterval(60);
     connect(&progressTimer, &QTimer::timeout, this, [this] {
-        if (previewWatcher.isRunning() && previewControl) {
-            previewProgress->setVisible(true);
+        if (previewWatcher.isRunning() && previewControl && renderingRevision == revision && !debounce.isActive() &&
+            renderElapsed.elapsed() >= 250) {
+            previewProgress->setFormat("正在渲染预览 %v / %m");
             previewProgress->setRange(0, qMax(1, int(doc.photos.size())));
             previewProgress->setValue(previewControl->progress.load());
         }
@@ -189,16 +205,21 @@ Window::Window() {
     connect(&debounce, &QTimer::timeout, this, &Window::startPreview);
     connect(&previewWatcher, &QFutureWatcher<RenderResult>::finished, this, [this] {
         if (renderingRevision != revision) {
-            debounce.start(0);
+            if (!debounce.isActive())
+                debounce.start();
             return;
         }
-        previewProgress->hide();
+        previewProgress->setRange(0, 100);
+        previewProgress->setValue(100);
+        previewProgress->setFormat("预览已更新");
         auto result = previewWatcher.result();
         if (result.canceled)
             return;
         if (!result.error.isEmpty()) {
             preview->clearImage();
             previewInfo->setText("预览失败 · 请检查照片");
+            previewProgress->setValue(0);
+            previewProgress->setFormat("预览失败");
             statusBar()->showMessage(result.error);
             return;
         }
@@ -247,7 +268,8 @@ Window::Window() {
     });
     syncControls();
     updateTitle();
-    statusBar()->showMessage("添加照片或将图片拖入窗口，开始制作一张索引图。");
+    statusBar()->showMessage(startupMessage.isEmpty() ? "添加照片或将图片拖入窗口，开始制作一张索引图。"
+                                                      : startupMessage);
 }
 Window::~Window() {
     if (previewControl)
@@ -367,8 +389,8 @@ void Window::buildUi() {
     auto viewBar = new QHBoxLayout;
     previewInfo = new QLabel("实时预览");
     previewInfo->setObjectName("previewInfo");
-    viewBar->addWidget(previewInfo);
-    viewBar->addStretch();
+    previewInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    viewBar->addWidget(previewInfo, 1);
     button(viewBar, "−", [this] { preview->zoom(1 / 1.2); });
     button(viewBar, "＋", [this] { preview->zoom(1.2); });
     button(viewBar, "适应", [this] { preview->fit(); });
@@ -377,8 +399,10 @@ void Window::buildUi() {
     cl->addWidget(preview);
     previewProgress = new QProgressBar;
     previewProgress->setObjectName("previewProgress");
-    previewProgress->setFormat("正在渲染预览 %v / %m");
-    previewProgress->hide();
+    previewProgress->setFormat("等待添加照片");
+    previewProgress->setRange(0, 100);
+    previewProgress->setValue(0);
+    previewProgress->setFixedHeight(20);
     cl->addWidget(previewProgress);
     auto help = new QLabel("点击预览中的照片进行调整  ·  Ctrl + 滚轮缩放  ·  拖动平移");
     help->setObjectName("muted");
@@ -407,19 +431,23 @@ void Window::buildUi() {
     photo->setProperty("focusRegion", 7);
     auto tag = [](QWidget *w, QFormLayout *f) { w->setProperty("focusRegion", f->property("focusRegion")); };
     auto section = [&](QFormLayout *parent, const QString &title, int focus, bool expanded = false) {
-        auto container = new QWidget;
+        auto container = new QFrame;
+        container->setObjectName("settingsSection");
         auto box = new QVBoxLayout(container);
-        box->setContentsMargins(0, 0, 0, 0);
+        box->setContentsMargins(1, 1, 1, 1);
+        box->setSpacing(0);
         auto toggle = new QToolButton;
         toggle->setText(title);
+        toggle->setObjectName("sectionToggle");
         toggle->setCheckable(true);
         toggle->setChecked(expanded);
         toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
         toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         auto body = new QWidget;
+        body->setObjectName("sectionBody");
         auto f = new QFormLayout(body);
-        f->setContentsMargins(3, 8, 3, 8);
+        f->setContentsMargins(10, 12, 10, 12);
         f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         f->setVerticalSpacing(10);
         f->setProperty("focusRegion", focus);
@@ -562,22 +590,6 @@ void Window::buildUi() {
             style->fontFile = importedFontFile(font.family());
             changed();
         });
-        auto load = new QPushButton("导入字体文件…");
-        tag(load, f);
-        f->addRow(load);
-        connect(load, &QPushButton::clicked, this, [this, style, family] {
-            QString file = QFileDialog::getOpenFileName(this, "导入字体", {}, "字体 (*.ttf *.otf *.ttc)");
-            if (file.isEmpty())
-                return;
-            QString error;
-            if (!importFont(style, file, &error)) {
-                report(error);
-                return;
-            }
-            QSignalBlocker b(family);
-            family->setCurrentFont(QFont(style->family));
-            changed();
-        });
         color(f, "文本颜色", &style->color);
     };
     auto &o = doc.options;
@@ -661,15 +673,48 @@ void Window::buildUi() {
             fontControl(f, &v->style);
         }
         imagePicker(f, &v->path, isLogo ? "自定义 Logo" : "水印图片");
-        spin(f, "位置 · 横 %", &v->x, 0, 100);
-        spin(f, "位置 · 纵 %", &v->y, 0, 100);
-        spin(f, isLogo ? "Logo 尺寸" : "字号 / 图片尺寸", &v->size, 16, 2000);
-        spin(f, "不透明度 %", &v->opacity, 0, 100);
+        spin(f, "位置 · 横 %", &v->x, 0, 100, isLogo ? "logoX" : "watermarkX");
+        spin(f, "位置 · 纵 %", &v->y, 0, 100, isLogo ? "logoY" : "watermarkY");
+        spin(f, isLogo ? "Logo 尺寸" : "字号 / 图片尺寸", &v->size, 16, 2000, isLogo ? "logoSize" : "watermarkSize");
+        spin(f, "不透明度 %", &v->opacity, 0, 100, isLogo ? "logoOpacity" : "watermarkOpacity");
         tip(f, isLogo ? "Logo 显示在标题栏；未选图片时使用内置 Logo。坐标按可移动空间计算，0% 靠左/上，100% 靠右/下。"
                       : "水印位于整张索引图最上层；图片保持比例，位置以可移动空间百分比表示。");
     };
     overlayControls(section(layout, "Logo", 10, true), &o.logo, true);
     overlayControls(section(layout, "自定义水印", 11), &o.watermark, false);
+    auto startup = section(layout, "启动预设", 0, true);
+    startupPresets = new QComboBox;
+    startupPresets->setObjectName("startupPreset");
+    startupPresets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    startupPresets->setMinimumContentsLength(12);
+    startup->addRow("每次启动使用", startupPresets);
+    auto refreshPresets = new QPushButton("刷新预设列表");
+    startup->addRow(refreshPresets);
+    connect(refreshPresets, &QPushButton::clicked, this, &Window::refreshStartupPresets);
+    refreshStartupPresets();
+    connect(startupPresets, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index < 0)
+            return;
+        const QString name = startupPresets->currentData().toString();
+        QString error;
+        Options checked;
+        if (!name.isEmpty() && !loadPreset(presetFolder + '/' + name, &checked, &error)) {
+            refreshStartupPresets();
+            report("无法设为启动预设：" + error);
+            return;
+        }
+        QDir().mkpath(presetFolder);
+        QSettings settings(presetFolder + "/startup.ini", QSettings::IniFormat);
+        settings.setValue("startup/preset", name);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            refreshStartupPresets();
+            report("无法保存启动设置，请检查软件目录是否可写。");
+            return;
+        }
+        statusBar()->showMessage("启动预设已设置，下次启动生效；当前编辑保持不变。");
+    });
+    tip(startup, "仅列出软件 presets 文件夹内已保存的预设。选择后下次启动生效；选择内置默认值可取消自动加载。");
     auto output = section(layout, "预览与输出", 0, true);
     spin(output, "预览宽度 px", &o.previewWidth, 600, 4572, "previewWidth");
     auto unit = new QComboBox;
@@ -853,6 +898,13 @@ void Window::buildUi() {
         QSlider::groove:horizontal{background:#45545d;height:4px;border-radius:2px;} QSlider::handle:horizontal{background:#80dfba;width:14px;margin:-5px 0;border-radius:7px;}
         QScrollBar:vertical{background:#22292e;width:10px;} QScrollBar::handle:vertical{background:#53636e;min-height:20px;border-radius:4px;}
         QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QStatusBar{color:#a8b9c2;}
+        QFrame#settingsSection{background:#2b353d;border:1px solid #4b606b;border-radius:7px;}
+        QWidget#sectionBody{background:#29343b;border-bottom-left-radius:6px;border-bottom-right-radius:6px;}
+        QWidget#sectionBody QLabel,QWidget#sectionBody QCheckBox{background:transparent;}
+        QToolButton#sectionToggle{background:#354650;color:#e6efef;border:0;border-left:3px solid #739b91;border-radius:5px;padding:10px 9px;text-align:left;font-weight:600;}
+        QToolButton#sectionToggle:hover{background:#425963;}
+        QToolButton#sectionToggle:checked{background:#35534e;color:#b8f4d9;border-left:3px solid #80dfba;}
+        QToolButton#sectionToggle:focus{border:1px solid #80dfba;}
         QGroupBox{border:1px solid #43515a;border-radius:5px;margin-top:12px;padding-top:12px;}
         QGroupBox::title{subcontrol-origin:margin;left:8px;color:#9aeacb;}
         QProgressBar{border:1px solid #43515a;border-radius:3px;text-align:center;min-height:16px;}
@@ -882,11 +934,14 @@ void Window::changed(int focus) {
     if (previewControl)
         previewControl->canceled.store(true);
     if (doc.photos.isEmpty()) {
-        previewProgress->hide();
+        previewProgress->setRange(0, 100);
+        previewProgress->setValue(0);
+        previewProgress->setFormat("等待添加照片");
         preview->clearImage();
         previewInfo->setText("添加照片以显示实时预览");
-    } else
-        previewInfo->setText("预览更新中…");
+    } else {
+        previewProgress->setFormat("等待更新…");
+    }
     cropX->setEnabled(photos->currentItem() && !doc.options.fit);
     cropY->setEnabled(photos->currentItem() && !doc.options.fit);
     debounce.start();
@@ -900,6 +955,7 @@ void Window::startPreview() {
     if (previewWatcher.isRunning() || doc.photos.isEmpty())
         return;
     renderingRevision = revision;
+    renderElapsed.start();
     previewControl = std::make_shared<RenderControl>();
     Document snapshot = doc;
     auto control = previewControl;
@@ -1056,8 +1112,23 @@ void Window::report(const QString &message) {
 bool Window::confirmDiscard() {
     return true;
 }
+void Window::refreshStartupPresets() {
+    QSignalBlocker blocker(startupPresets);
+    QSettings settings(presetFolder + "/startup.ini", QSettings::IniFormat);
+    const QString selected = settings.value("startup/preset").toString();
+    startupPresets->clear();
+    startupPresets->addItem("内置默认值", QString());
+    for (const auto &name : QDir(presetFolder).entryList({"*.fipreset"}, QDir::Files, QDir::Name))
+        startupPresets->addItem(QFileInfo(name).completeBaseName(), name);
+    int index = startupPresets->findData(selected);
+    if (index < 0 && !selected.isEmpty()) {
+        startupPresets->addItem("不可用：" + QFileInfo(selected).completeBaseName(), selected);
+        index = startupPresets->count() - 1;
+    }
+    startupPresets->setCurrentIndex(qMax(0, index));
+}
 bool Window::saveProject(bool) {
-    const QString folder = QCoreApplication::applicationDirPath() + "/presets";
+    const QString folder = presetFolder;
     if (!QDir().mkpath(folder)) {
         report("无法写入软件目录，请移动软件到可写目录。");
         return false;
@@ -1086,16 +1157,16 @@ bool Window::saveProject(bool) {
     projectPath = path;
     dirty = false;
     updateTitle();
+    refreshStartupPresets();
     statusBar()->showMessage("预设已保存到软件目录，包含全部设置及引用素材，不包含照片列表。");
     return true;
 }
 void Window::openProject(const QString &given) {
     if (exporting)
         return;
-    QString path = given.isEmpty() ? QFileDialog::getOpenFileName(this, "打开预设",
-                                                                  QCoreApplication::applicationDirPath() + "/presets",
-                                                                  "Film Index 预设 (*.fipreset)")
-                                   : given;
+    QString path = given.isEmpty()
+                       ? QFileDialog::getOpenFileName(this, "打开预设", presetFolder, "Film Index 预设 (*.fipreset)")
+                       : given;
     if (path.isEmpty())
         return;
     Options next;

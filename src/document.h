@@ -42,8 +42,10 @@ struct Options {
     Options() {
         logo.x = 3;
         watermark.text = "Film Index";
-        watermark.size = 72;
-        watermark.opacity = 25;
+        watermark.x = 50;
+        watermark.y = 5;
+        watermark.size = 300;
+        watermark.opacity = 100;
     }
 };
 struct Document {
